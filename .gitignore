@@ -1,0 +1,24 @@
+# Python virtual environment
+nexifuse_env/
+
+# Model outputs (weights, checkpoints, GGUF files)
+outputs/
+
+# llama.cpp cloned repo
+llama.cpp/
+
+# Cloned third-party repos
+data/repos/
+
+# Compiled/generated caches
+unsloth_compiled_cache/
+__pycache__/
+*.pyc
+
+# Test caches
+.hypothesis/
+.pytest_cache/
+
+# Kiro
+.kiro/
+nexifuse_model_adapter/adapter_model.safetensors

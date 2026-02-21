@@ -1,0 +1,59 @@
+training:
+  base_model: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+  lora_rank: 16
+  lora_alpha: 32
+  lora_target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  batch_size: 1
+  gradient_accumulation: 4
+  learning_rate: 0.0002
+  lr_scheduler: "cosine"
+  warmup_steps: 10
+  num_epochs: 3
+  max_seq_length: 2048
+  quantization: "nf4"
+  output_dir: "outputs"
+  adapter_output_dir: "nexifuse_model_adapter"
+
+data_factory:
+  model_name: "qwen2.5-coder:7b"
+  endpoint: "http://localhost:11434/api/generate"
+  context_docs_dir: "./docs"
+  domains:
+    - hl7v2
+    - fhir_r4
+    - mirth
+    - ehr_api
+    - ihe
+    - dicom
+  include_cot: true
+
+scraper:
+  repos:
+    - "nextgenhealthcare/connect-examples"
+    - "nextgenhealthcare/connect"
+    - "kaur-ravneet/mirthsync"
+  file_patterns:
+    - "*.js"
+    - "*.xml"
+    - "*.json"
+  phi_patterns:
+    - "\\d{3}-\\d{2}-\\d{4}"
+    - "password\\s*=\\s*['\"]"
+    - "api[_-]?key\\s*=\\s*['\"]"
+
+validation:
+  eslint_config: ".eslintrc.mirth.json"
+  fhir_schema_dir: "./schemas/fhir-r4"
+
+inference:
+  model_name: "nexifuse-robust-expert"
+  backend: "ollama"
+  host: "0.0.0.0"
+  port: 8080
