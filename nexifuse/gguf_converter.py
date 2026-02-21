@@ -112,10 +112,18 @@ def generate_modelfile(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Escape triple quotes in system prompt
-    escaped_prompt = SYSTEM_PROMPT.replace('"', '\\"')
+    # Llama 3 chat template matching the training format
+    chat_template = (
+        '{{- if .System }}<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n'
+        '{{ .System }}<|eot_id|>{{ end }}'
+        '{{ range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n'
+        '{{ .Content }}<|eot_id|>{{ end }}'
+        '<|start_header_id|>assistant<|end_header_id|>\n\n'
+    )
 
     modelfile_content = f'''FROM {gguf_path.resolve()}
+
+TEMPLATE """{chat_template}"""
 
 SYSTEM """{SYSTEM_PROMPT}"""
 
