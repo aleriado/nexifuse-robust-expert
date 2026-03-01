@@ -1,8 +1,8 @@
 """Data cleaning pipeline: dedup, normalization, and filtering.
 
 Reads raw JSONL files, applies MinHash near-duplicate detection,
-normalizes fields, discards empty/malformed entries, and writes
-cleaned JSONL.
+normalizes fields, discards empty/malformed entries, filters identity
+leakage (e.g. author names from scraped repos), and writes cleaned JSONL.
 """
 
 from __future__ import annotations
@@ -10,11 +10,24 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 
 from nexifuse.models import TrainingExample, CleaningStats
 
 logger = logging.getLogger(__name__)
+
+# Patterns that indicate identity/attribution leakage from source repos — reject these
+IDENTITY_NOISE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"mirthbrian", re.I),
+    re.compile(r"\bI'?m\s+Brian\b", re.I),
+    re.compile(r"\bby\s+Brian\s+", re.I),
+    re.compile(r"author\s*:\s*[^\s,]+", re.I),
+    re.compile(r"created\s+by\s+[^\n.]{2,40}", re.I),
+    re.compile(r"written\s+by\s+[^\n.]{2,40}", re.I),
+    re.compile(r"@author\s+[^\n]+", re.I),
+    re.compile(r"copyright\s+©?\s*\d{4}\s+[^\n]{3,50}", re.I),
+]
 
 
 def _normalize_fields(record: dict) -> dict | None:
@@ -33,6 +46,23 @@ def _is_empty(record: dict) -> bool:
     instr = record.get("instruction", "").strip()
     output = record.get("output", "").strip()
     return not instr and not output
+
+
+def _has_identity_noise(
+    record: dict,
+    patterns: list[re.Pattern[str]] | None = None,
+) -> bool:
+    """Return True if instruction or output contains identity/attribution leakage."""
+    patterns = patterns or IDENTITY_NOISE_PATTERNS
+    text = (
+        (record.get("instruction") or "")
+        + "\n"
+        + (record.get("output") or "")
+    ).lower()
+    for pat in patterns:
+        if pat.search(text):
+            return True
+    return False
 
 
 def _shingle_set(text: str, k: int = 5) -> set[str]:
@@ -61,6 +91,7 @@ def clean_data(
     input_paths: list[str | Path],
     output_path: str | Path = "data/cleaned/cleaned.jsonl",
     similarity_threshold: float = 0.9,
+    identity_patterns: list[re.Pattern[str]] | None = None,
 ) -> CleaningStats:
     """Clean and deduplicate training data from one or more JSONL files.
 
@@ -112,6 +143,11 @@ def clean_data(
                     stats.empty_discarded += 1
                     continue
 
+                if _has_identity_noise(record, identity_patterns):
+                    stats.identity_filtered += 1
+                    logger.debug("Filtered identity noise at %s:%d", fpath, line_num)
+                    continue
+
                 records.append(record)
 
     # Stage 2: Exact dedup by output hash
@@ -156,8 +192,8 @@ def clean_data(
             stats.output_rows += 1
 
     logger.info(
-        "Cleaning complete: %d → %d rows (dupes: %d, malformed: %d, empty: %d)",
+        "Cleaning complete: %d → %d rows (dupes: %d, malformed: %d, empty: %d, identity: %d)",
         stats.input_rows, stats.output_rows, stats.duplicates_removed,
-        stats.malformed_skipped, stats.empty_discarded,
+        stats.malformed_skipped, stats.empty_discarded, stats.identity_filtered,
     )
     return stats

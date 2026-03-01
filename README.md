@@ -187,23 +187,25 @@ npm run tauri dev
 |---|---|
 | Base Model | DeepSeek-R1-Distill-Llama-8B |
 | Quantization | 4-bit NF4 |
-| LoRA Rank | 16 |
-| LoRA Alpha | 32 |
+| LoRA Rank | 32 |
+| LoRA Alpha | 64 |
 | Target Modules | q, k, v, o, gate, up, down proj |
 | Learning Rate | 2e-4 (cosine decay) |
 | Batch Size | 1 (×4 gradient accumulation) |
-| Epochs | 3 |
+| Epochs | 5 |
 | Precision | BF16 mixed |
 
 ## Data Pipeline Overview
 
+Target: **10k–20k cleaned + validated examples** for better model behavior. Use `--num-per-domain 500` (default) or `2000` for larger runs.
+
 | Stage | Input | Output | Records |
 |---|---|---|---|
 | Scrape | GitHub repos | `data/raw/scraped.jsonl` | ~6,400 |
-| Generate | Teacher model + docs | `data/raw/synthetic.jsonl` | growing |
-| Clean | Raw JSONL | `data/cleaned/cleaned.jsonl` | ~1,200 |
+| Generate | Teacher model (e.g. llama3:70b) + docs | `data/raw/synthetic.jsonl` | growing |
+| Clean | Raw JSONL | `data/cleaned/cleaned.jsonl` | identity filtered, deduped |
 | Validate | Cleaned JSONL | `data/validated/passed.jsonl` | validated |
-| Format | Validated JSONL | `data/formatted/train.jsonl` | ~1,200 |
+| Format | Passed + `data/identity/conversational.jsonl` | `data/formatted/train.jsonl` | identity + code |
 | DPO | Pass/fail pairs | `data/dpo/dpo_pairs.jsonl` | preference pairs |
 
 ## CLI Reference
@@ -218,7 +220,7 @@ Commands:
   clean        Clean and deduplicate raw data
   validate     Run multi-format validation on cleaned data
   dpo          Generate DPO preference pairs from validation results
-  format       Format validated data into chat templates
+  format       Format validated data (+ optional identity examples) into chat templates
   train        Run SFT fine-tuning with LoRA
   train-dpo    Run DPO alignment training
   merge        Merge LoRA adapter into full model weights

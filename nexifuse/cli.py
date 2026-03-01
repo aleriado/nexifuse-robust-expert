@@ -93,7 +93,13 @@ def cmd_dpo(args):
 
 def cmd_format(args):
     from nexifuse.prompt_formatter import format_dataset
-    count = format_dataset(args.input, output_path=args.output, template=args.template)
+    identity_paths = list(args.identity) if getattr(args, "identity", None) else None
+    count = format_dataset(
+        args.input,
+        output_path=args.output,
+        template=args.template,
+        identity_paths=identity_paths,
+    )
     print(f"Formatted {count} examples")
 
 
@@ -180,7 +186,10 @@ def cmd_pipeline(args):
 
     print("\n=== Stage 6: Prompt Formatting ===")
     from nexifuse.prompt_formatter import format_dataset
-    format_dataset("data/validated/passed.jsonl")
+    format_dataset(
+        "data/validated/passed.jsonl",
+        identity_paths=["data/identity/conversational.jsonl"],
+    )
 
     print("\n=== Pipeline complete ===")
 
@@ -206,7 +215,12 @@ def main():
     p = sub.add_parser("generate", help="Generate synthetic training data")
     p.add_argument("-o", "--output", default="data/raw/synthetic.jsonl")
     p.add_argument("--docs-dir", default="data/docs_processed")
-    p.add_argument("--num-per-domain", type=int, default=100)
+    p.add_argument(
+        "--num-per-domain",
+        type=int,
+        default=500,
+        help="Synthetic examples per domain (default 500)",
+    )
 
     # clean
     p = sub.add_parser("clean", help="Clean and deduplicate data")
@@ -229,6 +243,12 @@ def main():
     p.add_argument("-i", "--input", default="data/validated/passed.jsonl")
     p.add_argument("-o", "--output", default="data/formatted/train.jsonl")
     p.add_argument("--template", choices=["llama", "chatml"], default="llama")
+    p.add_argument(
+        "--identity",
+        nargs="*",
+        default=["data/identity/conversational.jsonl"],
+        help="JSONL file(s) with conversational/identity examples to prepend (default: data/identity/conversational.jsonl)",
+    )
 
     # train
     p = sub.add_parser("train", help="Run SFT fine-tuning")
@@ -272,7 +292,12 @@ def main():
     # pipeline
     p = sub.add_parser("pipeline", help="Run full data pipeline")
     p.add_argument("--no-teacher", action="store_true")
-    p.add_argument("--num-per-domain", type=int, default=100)
+    p.add_argument(
+        "--num-per-domain",
+        type=int,
+        default=500,
+        help="Synthetic examples per domain (default 500; use ~2000 for 10k+ cleaned examples)",
+    )
 
     args = parser.parse_args()
     _setup_logging(args.verbose)

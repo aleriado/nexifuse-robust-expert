@@ -129,3 +129,4 @@ class CleaningStats:
     duplicates_removed: int = 0
     malformed_skipped: int = 0
     empty_discarded: int = 0
+    identity_filtered: int = 0

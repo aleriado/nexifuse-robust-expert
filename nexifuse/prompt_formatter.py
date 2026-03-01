@@ -79,17 +79,21 @@ def format_dataset(
     output_path: str | Path = "data/formatted/train.jsonl",
     template: str = "llama",
     system_prompt: str = SYSTEM_PROMPT,
+    identity_paths: list[str | Path] | None = None,
 ) -> int:
     """Format an entire JSONL dataset into chat-templated training data.
 
     Each output line is a JSON object with a "text" field containing
     the formatted conversation, suitable for causal LM fine-tuning.
+    If identity_paths are provided, those examples are formatted and
+    written first (conversational/identity), then the main input_path.
 
     Args:
-        input_path: JSONL file of TrainingExample records.
+        input_path: JSONL file of TrainingExample records (validated code examples).
         output_path: Where to write formatted JSONL.
         template: Template style — "llama" or "chatml".
         system_prompt: System prompt to inject.
+        identity_paths: Optional list of JSONL files with conversational/identity examples to prepend.
 
     Returns:
         Number of examples formatted.
@@ -98,24 +102,37 @@ def format_dataset(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def format_stream(path: Path) -> int:
+        c = 0
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    example = TrainingExample.from_dict(record)
+                    formatted = format_example(example, template, system_prompt)
+                    fout.write(json.dumps({"text": formatted}, ensure_ascii=False) + "\n")
+                    c += 1
+                except (json.JSONDecodeError, KeyError) as exc:
+                    logger.debug("Skipping malformed record in %s: %s", path, exc)
+        return c
+
     count = 0
-    with (
-        open(input_path, encoding="utf-8") as fin,
-        open(output_path, "w", encoding="utf-8") as fout,
-    ):
-        for line in fin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-                example = TrainingExample.from_dict(record)
-                formatted = format_example(example, template, system_prompt)
-                fout.write(json.dumps({"text": formatted}, ensure_ascii=False) + "\n")
-                count += 1
-            except (json.JSONDecodeError, KeyError) as exc:
-                logger.debug("Skipping malformed record: %s", exc)
-                continue
+    with open(output_path, "w", encoding="utf-8") as fout:
+        # Prepend identity/conversational examples
+        for ip in identity_paths or []:
+            p = Path(ip)
+            if p.exists():
+                n = format_stream(p)
+                count += n
+                logger.info("Formatted %d identity examples from %s", n, p)
+
+        # Main validated dataset
+        if input_path.exists():
+            n = format_stream(input_path)
+            count += n
 
     logger.info("Formatted %d examples → %s (template: %s)", count, output_path, template)
     return count
