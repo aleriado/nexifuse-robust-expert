@@ -22,7 +22,7 @@ training:
   adapter_output_dir: "nexifuse_model_adapter"
 
 data_factory:
-  model_name: "llama3:70b"
+  model_name: "qwen2.5-coder:7b"
   endpoint: "http://localhost:11434/api/generate"
   context_docs_dir: "./docs"
   domains:
@@ -32,7 +32,9 @@ data_factory:
     - ehr_api
     - ihe
     - dicom
-  include_cot: true
+  include_cot: false
+  timeout_seconds: 90
+  max_retries: 1
 
 scraper:
   repos:

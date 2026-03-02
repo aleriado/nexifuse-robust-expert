@@ -7,11 +7,21 @@ on the formatted training dataset. Supports SFT and optional DPO stages.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from nexifuse.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _is_multi_gpu_ddp() -> bool:
+    """True if we are in a multi-process DDP run (e.g. accelerate launch --num_processes 8)."""
+    try:
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        return world_size > 1
+    except ValueError:
+        return False
 
 
 def _check_gpu():
@@ -68,6 +78,12 @@ def run_sft(
     logger.info("Applying LoRA: r=%d, alpha=%d, targets=%s",
                 tc.lora_rank, tc.lora_alpha, tc.lora_target_modules)
 
+    # Unsloth gradient checkpointing + DDP causes "marked ready twice" (reentrant backward).
+    # Disable it when running multi-GPU so DDP works.
+    use_grad_ckpt = "unsloth" if not _is_multi_gpu_ddp() else False
+    if _is_multi_gpu_ddp():
+        logger.info("Multi-GPU DDP detected: disabling Unsloth gradient checkpointing for DDP compatibility")
+
     model = FastLanguageModel.get_peft_model(
         model,
         r=tc.lora_rank,
@@ -75,7 +91,7 @@ def run_sft(
         lora_dropout=0,
         target_modules=tc.lora_target_modules,
         bias="none",
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing=use_grad_ckpt,
     )
 
     # Print trainable params
@@ -117,17 +133,29 @@ def run_sft(
     # Unsloth 2026.2.x patches training_step and calls loss.mean()
     # but compute_loss can return int(0) for fully-masked batches.
     # We override compute_loss to guarantee a tensor return.
+    def _device_for_model(model):
+        return next(model.parameters()).device
+
+    def _to_loss_tensor(value, device):
+        if isinstance(value, torch.Tensor):
+            return value
+        try:
+            return torch.tensor(float(value), device=device, requires_grad=True)
+        except (TypeError, ValueError):
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
     class SafeSFTTrainer(SFTTrainer):
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
             result = super().compute_loss(model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch)
+            device = _device_for_model(model)
             if return_outputs:
                 loss, outputs = result
                 if not isinstance(loss, torch.Tensor):
-                    loss = torch.tensor(float(loss), device=next(model.parameters()).device, requires_grad=True)
+                    loss = _to_loss_tensor(loss, device)
                 return loss, outputs
             else:
                 if not isinstance(result, torch.Tensor):
-                    result = torch.tensor(float(result), device=next(model.parameters()).device, requires_grad=True)
+                    result = _to_loss_tensor(result, device)
                 return result
     # ───────────────────────────────────────────────────────────────
 
@@ -144,18 +172,20 @@ def run_sft(
     logger.info("Starting SFT training (%d epochs)...", tc.num_epochs)
     train_result = trainer.train()
 
-    # Log training metrics
+    # Log training metrics (all ranks)
     metrics = train_result.metrics
     logger.info("Training complete. Loss: %.4f, Runtime: %.1fs, Samples/sec: %.2f",
                 metrics.get("train_loss", 0),
                 metrics.get("train_runtime", 0),
                 metrics.get("train_samples_per_second", 0))
 
-    # Save LoRA adapter
-    adapter_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(str(adapter_dir))
-    tokenizer.save_pretrained(str(adapter_dir))
-    logger.info("LoRA adapter saved to %s", adapter_dir)
+    # Save LoRA adapter only on main process in DDP to avoid overwrites
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if local_rank == 0:
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(adapter_dir))
+        tokenizer.save_pretrained(str(adapter_dir))
+        logger.info("LoRA adapter saved to %s", adapter_dir)
 
     return adapter_dir
 

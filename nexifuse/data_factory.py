@@ -85,24 +85,30 @@ def _call_teacher(
     endpoint: str,
     model: str,
     temperature: float = 0.7,
+    timeout: int = 300,
+    max_retries: int = 2,
 ) -> str:
-    """Call the teacher model and return the response text."""
-    try:
-        resp = requests.post(
-            endpoint,
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": temperature},
-            },
-            timeout=180,
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        logger.warning("Teacher call failed: %s", exc)
-        return ""
+    """Call the teacher model and return the response text. Retries on timeout."""
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(
+                endpoint,
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                },
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json().get("response", "").strip()
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            if attempt < max_retries:
+                logger.debug("Teacher call attempt %d failed, retrying: %s", attempt + 1, exc)
+            else:
+                logger.warning("Teacher call failed after %d attempts: %s", max_retries + 1, exc)
+    return ""
 
 
 def _generate_instruction(
@@ -110,6 +116,8 @@ def _generate_instruction(
     context: str,
     endpoint: str,
     model: str,
+    timeout: int = 300,
+    max_retries: int = 2,
 ) -> str:
     """Stage 1: Generate a realistic user instruction (vibe) for a domain."""
     templates = _VIBE_TEMPLATES.get(domain, _VIBE_TEMPLATES["mirth"])
@@ -125,7 +133,7 @@ def _generate_instruction(
         f"realistic details (message types, segment names, field numbers, API endpoints). "
         f"Return ONLY the instruction, nothing else."
     )
-    result = _call_teacher(prompt, endpoint, model)
+    result = _call_teacher(prompt, endpoint, model, timeout=timeout, max_retries=max_retries)
     return result if result else seed_vibe
 
 
@@ -136,6 +144,8 @@ def _generate_code(
     endpoint: str,
     model: str,
     include_cot: bool = True,
+    timeout: int = 300,
+    max_retries: int = 2,
 ) -> tuple[str, str | None]:
     """Stage 2: Generate code from an instruction. Returns (code, cot_trace)."""
     cot_prefix = (
@@ -154,7 +164,7 @@ def _generate_code(
         f"Include appropriate error handling and comments."
     )
 
-    response = _call_teacher(prompt, endpoint, model, temperature=0.3)
+    response = _call_teacher(prompt, endpoint, model, temperature=0.3, timeout=timeout, max_retries=max_retries)
     if not response:
         return "", None
 
@@ -188,6 +198,8 @@ def generate_examples(
         List of TrainingExample objects written to JSONL.
     """
     tc = config.data_factory
+    timeout = getattr(tc, "timeout_seconds", 300)
+    max_retries = getattr(tc, "max_retries", 2)
     docs_dir = Path(docs_dir)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,13 +209,14 @@ def generate_examples(
 
     for domain in tc.domains:
         context = _load_domain_context(docs_dir, domain)
-        logger.info("Generating %d examples for domain '%s' (context: %d chars)",
-                     num_per_domain, domain, len(context))
+        logger.info("Generating %d examples for domain '%s' (context: %d chars, timeout=%ds, max_retries=%d)",
+                     num_per_domain, domain, len(context), timeout, max_retries)
 
         for i in range(num_per_domain):
             # Stage 1: Generate instruction
             instruction = _generate_instruction(
                 domain, context, tc.endpoint, tc.model_name,
+                timeout=timeout, max_retries=max_retries,
             )
 
             # Stage 2: Generate code
@@ -211,6 +224,7 @@ def generate_examples(
                 instruction, domain, context,
                 tc.endpoint, tc.model_name,
                 include_cot=tc.include_cot,
+                timeout=timeout, max_retries=max_retries,
             )
 
             if not code:

@@ -106,7 +106,7 @@ def _synthesize_instruction(
         resp = requests.post(
             teacher_endpoint,
             json={"model": teacher_model, "prompt": prompt, "stream": False},
-            timeout=120,
+            timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -135,6 +135,7 @@ def scrape_repos(
     repos_dir: str | Path = "data/repos",
     use_teacher: bool = True,
     max_file_size: int = 100_000,
+    max_files_per_repo: int = 500,
 ) -> list[ScrapedExample]:
     """Scrape configured GitHub repos and produce training examples.
 
@@ -167,9 +168,13 @@ def scrape_repos(
             continue
 
         files = _collect_files(repo_path, sc.file_patterns)
-        logger.info("Found %d matching files in %s", len(files), repo)
+        if len(files) > max_files_per_repo:
+            logger.info("Found %d matching files in %s; limiting to %d", len(files), repo, max_files_per_repo)
+            files = files[:max_files_per_repo]
+        else:
+            logger.info("Found %d matching files in %s", len(files), repo)
 
-        for fpath in files:
+        for idx, fpath in enumerate(files):
             # Size check
             try:
                 if fpath.stat().st_size > max_file_size:
@@ -219,6 +224,9 @@ def scrape_repos(
                 domain=domain,
             )
             examples.append(example)
+
+            if (idx + 1) % 25 == 0:
+                logger.info("  [%s] processed %d/%d files", repo, idx + 1, len(files))
 
     # Write JSONL
     with open(output_path, "w", encoding="utf-8") as f:

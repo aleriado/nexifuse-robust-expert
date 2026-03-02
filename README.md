@@ -108,13 +108,54 @@ data_factory:
 
 The entire pipeline is driven through the `nexifuse` CLI.
 
+### Generate 20k+ cleaned data (with conversational)
+
+To build a dataset of **20k+ cleaned** examples and include conversational/identity data in the final `train.jsonl`:
+
+```bash
+python -m nexifuse pipeline-20k
+```
+
+Or use the script (uses venv if present):
+
+```bash
+./scripts/generate_20k_cleaned.sh
+```
+
+This runs: ingest → scrape (with `--no-teacher` for speed; up to 500 files/repo) → generate (6000/domain = 36k synthetic; **requires Ollama/teacher**) → clean → validate → format. Identity examples are prepended automatically. Result: `data/cleaned/cleaned.jsonl` and `data/formatted/train.jsonl` with 20k+ code examples plus conversational rows.
+
+**Prerequisite:** Ollama serving the teacher (e.g. `llama3:70b`) for the **generate** step. Scrape runs without teacher.
+
+### Recommended training run (10k+ examples)
+
+1. **Teacher model** — Ensure Ollama is serving the teacher (e.g. Llama 3 70B) so the pipeline can call it:
+   ```bash
+   ollama run llama3:70b
+   ```
+   (Pulls the model if needed. Keep Ollama running; the pipeline uses `http://localhost:11434/api/generate`.)
+
+2. **Generate data** — Run the full pipeline (ingest → scrape → generate → clean → validate → format) with 2000 examples per domain to target 10k+ cleaned/validated examples plus identity examples in `data/formatted/train.jsonl`:
+   ```bash
+   python -m nexifuse pipeline --num-per-domain 2000
+   ```
+
+3. **Train** — Run SFT fine-tuning (use `train-multigpu` to use all GPUs), then optionally DPO and export:
+   ```bash
+   python -m nexifuse train          # single GPU
+   python -m nexifuse train-multigpu # all GPUs via Accelerate DDP (e.g. 8x L4)
+   # optional: python -m nexifuse train-dpo
+   python -m nexifuse convert
+   python -m nexifuse modelfile
+   python -m nexifuse register --name nexifuse-robust-expert
+   ```
+
 ### Full Data Pipeline (one command)
 
 ```bash
-python -m nexifuse pipeline --num-per-domain 100
+python -m nexifuse pipeline --num-per-domain 500
 ```
 
-This runs: ingest → scrape → generate → clean → validate → format.
+This runs: ingest → scrape → generate → clean → validate → format (including identity examples in formatted output).
 
 ### Step-by-Step Pipeline
 
@@ -221,8 +262,9 @@ Commands:
   validate     Run multi-format validation on cleaned data
   dpo          Generate DPO preference pairs from validation results
   format       Format validated data (+ optional identity examples) into chat templates
-  train        Run SFT fine-tuning with LoRA
-  train-dpo    Run DPO alignment training
+  train          Run SFT fine-tuning with LoRA (single GPU)
+  train-multigpu Run SFT on all GPUs via Accelerate DDP
+  train-dpo     Run DPO alignment training
   merge        Merge LoRA adapter into full model weights
   convert      Convert LoRA adapter to GGUF format
   quantize     Quantize model to GGUF (alias for convert)

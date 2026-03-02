@@ -46,6 +46,8 @@ class TeacherConfig:
         ]
     )
     include_cot: bool = True
+    timeout_seconds: int = 300
+    max_retries: int = 2
 
 
 @dataclass

@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 from nexifuse.config import ConfigManager
 
@@ -108,6 +111,31 @@ def cmd_train(args):
     from nexifuse.training_pipeline import run_sft
     adapter_path = run_sft(config, train_data_path=args.input)
     print(f"Training complete. Adapter saved to {adapter_path}")
+
+
+def cmd_train_multigpu(args):
+    """Launch SFT training with all GPUs via Hugging Face Accelerate (DDP)."""
+    try:
+        import torch
+        n = torch.cuda.device_count() or 1
+    except Exception:
+        n = 1
+    n = getattr(args, "num_processes", None) or n
+    venv_bin = Path(sys.executable).parent
+    accelerate_exe = venv_bin / "accelerate"
+    extra = ["-i", str(args.input)]
+    if getattr(args, "config", None) and args.config != "config.yaml":
+        extra.extend(["-c", args.config])
+    if args.verbose:
+        extra.append("-v")
+    if accelerate_exe.exists():
+        cmd = [str(accelerate_exe), "launch", "--num_processes", str(n), "-m", "nexifuse", "train"] + extra
+    else:
+        cmd = [sys.executable, "-m", "accelerate", "launch", "--num_processes", str(n), "-m", "nexifuse", "train"] + extra
+    logger.info("Running multi-GPU training with %d processes: %s", n, " ".join(cmd))
+    rc = subprocess.run(cmd, cwd=os.getcwd())
+    if rc.returncode != 0:
+        sys.exit(rc.returncode)
 
 
 def cmd_train_dpo(args):
@@ -194,6 +222,20 @@ def cmd_pipeline(args):
     print("\n=== Pipeline complete ===")
 
 
+# Target ~20k+ cleaned: 6 domains * 6000 = 36k synthetic + scrape; after dedup/identity/validate → 20k+
+PIPELINE_20K_NUM_PER_DOMAIN = 6000
+
+
+def cmd_pipeline_20k(args):
+    """Run full pipeline targeting 20k+ cleaned examples (includes conversational data in format).
+    Scrape uses --no-teacher so it completes quickly; generate requires Ollama for 36k synthetic examples.
+    """
+    args.num_per_domain = PIPELINE_20K_NUM_PER_DOMAIN
+    args.no_teacher = True  # Scrape without teacher: fast, uses fallback instructions; generate needs teacher
+    logger.info("Running pipeline for 20k+ cleaned target (num_per_domain=%d, scrape --no-teacher)", args.num_per_domain)
+    cmd_pipeline(args)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="nexifuse", description="NexiFuse Health AI Pipeline")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
@@ -254,6 +296,11 @@ def main():
     p = sub.add_parser("train", help="Run SFT fine-tuning")
     p.add_argument("-i", "--input", default="data/formatted/train.jsonl")
 
+    # train-multigpu (launch with accelerate for all GPUs)
+    p = sub.add_parser("train-multigpu", help="Run SFT fine-tuning on all GPUs via Accelerate DDP")
+    p.add_argument("-i", "--input", default="data/formatted/train.jsonl")
+    p.add_argument("-n", "--num-processes", type=int, default=None, help="Number of processes (default: all visible GPUs)")
+
     # train-dpo
     p = sub.add_parser("train-dpo", help="Run DPO alignment")
     p.add_argument("-i", "--input", default="data/dpo/dpo_pairs.jsonl")
@@ -296,8 +343,12 @@ def main():
         "--num-per-domain",
         type=int,
         default=500,
-        help="Synthetic examples per domain (default 500; use ~2000 for 10k+ cleaned examples)",
+        help="Synthetic examples per domain (default 500; use 6000 for 20k+ cleaned)",
     )
+
+    # pipeline-20k: same as pipeline but with num_per_domain=6000 for 20k+ cleaned + conversational
+    p = sub.add_parser("pipeline-20k", help="Run full pipeline targeting 20k+ cleaned examples (includes identity/conversational)")
+    p.add_argument("--no-teacher", action="store_true")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
@@ -309,10 +360,11 @@ def main():
     commands = {
         "ingest": cmd_ingest, "scrape": cmd_scrape, "generate": cmd_generate,
         "clean": cmd_clean, "validate": cmd_validate, "dpo": cmd_dpo,
-        "format": cmd_format, "train": cmd_train, "train-dpo": cmd_train_dpo,
+        "format": cmd_format, "train": cmd_train, "train-multigpu": cmd_train_multigpu,
+        "train-dpo": cmd_train_dpo,
         "merge": cmd_merge, "convert": cmd_convert, "quantize": cmd_quantize,
         "modelfile": cmd_modelfile, "register": cmd_register,
-        "serve": cmd_serve, "pipeline": cmd_pipeline,
+        "serve": cmd_serve, "pipeline": cmd_pipeline, "pipeline-20k": cmd_pipeline_20k,
     }
 
     commands[args.command](args)
