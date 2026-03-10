@@ -188,6 +188,10 @@ def generate_examples(
 ) -> list[TrainingExample]:
     """Generate synthetic training examples using the teacher model.
 
+    Supports resume: if output_path already exists, counts existing examples
+    per domain and skips completed work. New examples are appended incrementally
+    so progress is never lost on interruption.
+
     Args:
         config: Pipeline configuration.
         output_path: Where to write the output JSONL.
@@ -195,7 +199,7 @@ def generate_examples(
         num_per_domain: Number of examples to generate per domain.
 
     Returns:
-        List of TrainingExample objects written to JSONL.
+        List of TrainingExample objects (existing + new).
     """
     tc = config.data_factory
     timeout = getattr(tc, "timeout_seconds", 300)
@@ -204,54 +208,87 @@ def generate_examples(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # --- Resume support: count existing examples per domain ---
+    existing_counts: dict[str, int] = {}
     examples: list[TrainingExample] = []
+    if output_path.exists() and output_path.stat().st_size > 0:
+        with open(output_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    domain = row.get("domain", "unknown")
+                    existing_counts[domain] = existing_counts.get(domain, 0) + 1
+                    examples.append(TrainingExample.from_dict(row))
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Skipping malformed line %d in existing file", line_num)
+        total_existing = sum(existing_counts.values())
+        logger.info("Resume: found %d existing examples %s", total_existing, dict(existing_counts))
+    else:
+        logger.info("Starting fresh generation (no existing file)")
+
     failed = 0
+    new_count = 0
 
-    for domain in tc.domains:
-        context = _load_domain_context(docs_dir, domain)
-        logger.info("Generating %d examples for domain '%s' (context: %d chars, timeout=%ds, max_retries=%d)",
-                     num_per_domain, domain, len(context), timeout, max_retries)
+    # Open in append mode so each example is persisted immediately
+    with open(output_path, "a", encoding="utf-8") as f:
+        for domain in tc.domains:
+            already_done = existing_counts.get(domain, 0)
+            remaining = num_per_domain - already_done
 
-        for i in range(num_per_domain):
-            # Stage 1: Generate instruction
-            instruction = _generate_instruction(
-                domain, context, tc.endpoint, tc.model_name,
-                timeout=timeout, max_retries=max_retries,
-            )
-
-            # Stage 2: Generate code
-            code, cot_trace = _generate_code(
-                instruction, domain, context,
-                tc.endpoint, tc.model_name,
-                include_cot=tc.include_cot,
-                timeout=timeout, max_retries=max_retries,
-            )
-
-            if not code:
-                failed += 1
+            if remaining <= 0:
+                logger.info("Domain '%s': already complete (%d/%d), skipping",
+                            domain, already_done, num_per_domain)
                 continue
 
-            example = TrainingExample(
-                instruction=instruction,
-                input="",
-                output=code,
-                cot_trace=cot_trace,
-                domain=domain,
-                source_standard=domain,
-                version="synthetic-v1",
-            )
-            examples.append(example)
+            context = _load_domain_context(docs_dir, domain)
+            logger.info("Generating %d examples for domain '%s' (already have %d, context: %d chars, timeout=%ds, max_retries=%d)",
+                         remaining, domain, already_done, len(context), timeout, max_retries)
 
-            if (i + 1) % 25 == 0:
-                logger.info("  [%s] %d/%d generated", domain, i + 1, num_per_domain)
+            for i in range(remaining):
+                # Stage 1: Generate instruction
+                instruction = _generate_instruction(
+                    domain, context, tc.endpoint, tc.model_name,
+                    timeout=timeout, max_retries=max_retries,
+                )
 
-    # Write JSONL
-    with open(output_path, "w", encoding="utf-8") as f:
-        for ex in examples:
-            f.write(json.dumps(ex.to_dict(), ensure_ascii=False) + "\n")
+                # Stage 2: Generate code
+                code, cot_trace = _generate_code(
+                    instruction, domain, context,
+                    tc.endpoint, tc.model_name,
+                    include_cot=tc.include_cot,
+                    timeout=timeout, max_retries=max_retries,
+                )
+
+                if not code:
+                    failed += 1
+                    continue
+
+                example = TrainingExample(
+                    instruction=instruction,
+                    input="",
+                    output=code,
+                    cot_trace=cot_trace,
+                    domain=domain,
+                    source_standard=domain,
+                    version="synthetic-v1",
+                )
+                examples.append(example)
+                new_count += 1
+
+                # Write immediately and flush so progress survives interruption
+                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+                f.flush()
+
+                if (i + 1) % 25 == 0:
+                    logger.info("  [%s] %d/%d generated (total in file: %d)",
+                                domain, i + 1, remaining, len(examples))
 
     logger.info(
-        "Data factory complete: %d examples written to %s (failed: %d)",
-        len(examples), output_path, failed,
+        "Data factory complete: %d total examples in %s (new: %d, resumed: %d, failed: %d)",
+        len(examples), output_path, new_count,
+        len(examples) - new_count, failed,
     )
     return examples
