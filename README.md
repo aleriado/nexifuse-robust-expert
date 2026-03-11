@@ -1,16 +1,31 @@
 # NexiFuse Health — Robust Expert
 
-A domain-specific AI model for healthcare data interoperability, fine-tuned on **DeepSeek-R1-Distill-Llama-8B** using LoRA (Unsloth). Translates natural language into production-grade **Mirth Connect**, **HL7 v2**, **FHIR R4**, and **EHR API** integration code.
+A domain-specific AI model for healthcare data interoperability, fine-tuned on **DeepSeek-R1-Distill-Llama-8B** using LoRA (Unsloth). Translates natural language into production-grade **Mirth Connect**, **HL7 v2**, **FHIR R4**, and **EHR API** integration code — while retaining general assistant capabilities (math, reasoning, casual conversation, general coding).
 
-Designed for on-premise deployment on NVIDIA hardware. The trained model is quantized to GGUF Q4_K_M (4.6 GB), served locally via Ollama with an OpenAI-compatible API, and consumed by the **Integrator** desktop app (Tauri 2 + React).
+Designed for fully on-premise deployment. Zero API costs. Zero data leaves the premises. The trained model is quantized to GGUF Q4_K_M (4.6 GB), served locally via Ollama with an OpenAI-compatible API, and consumed by the **Integrator** desktop app (Tauri 2 + React).
 
 ## Highlights
 
-- **9,302 training examples** across 6 healthcare domains — synthetic + scraped + conversational
-- **8-GPU distributed training** on NVIDIA L4 cluster via Accelerate DDP — 2 hours to convergence
-- **97% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security)
+- **25k target dataset** with balanced mixture: 40-45% healthcare domain, 25-30% general assistant, 15-20% multi-turn conversations, 3-5% identity anchors
+- **Dual teacher model stack** — DeepSeek-R1 70B (complex reasoning) + Qwen 2.5 Coder 32B (bulk generation), both running locally via Ollama
+- **Multi-GPU distributed training** via Accelerate DDP — 8x NVIDIA L4 cluster
+- **97% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
 - **End-to-end CLI pipeline** — from data ingestion to model serving in one tool
 - **OpenAI-compatible API** — drop-in replacement for any OpenAI client
+- **100% local, 100% free** — all training, generation, and inference on-premise
+
+## Current Status
+
+| Phase | Status | Details |
+|-------|--------|---------|
+| Phase 0: Environment Setup | COMPLETE | DGX Spark / GCP L4 cluster ready |
+| Phase 1: Documentation Corpus | COMPLETE | docs/ organized by domain |
+| Phase 2: Data Generation | IN PROGRESS | 9.3k healthcare examples done; general + multi-turn data planned (v1 target: 25k) |
+| Phase 3: Data Processing | COMPLETE | Pipeline works: clean → validate → format |
+| Phase 4: Model Training (MVP) | COMPLETE | 8B model trained on 9.3k examples, loss 0.2256 |
+| Phase 5: Model Export | COMPLETE | GGUF Q4_K_M (4.6 GB) exported |
+| Phase 6: Deployment | COMPLETE | Ollama + FastAPI server + Integrator app |
+| Phase 7: Iterative Improvement | IN PROGRESS | Expanding dataset with general + multi-turn data |
 
 ## Architecture
 
@@ -18,9 +33,10 @@ Designed for on-premise deployment on NVIDIA hardware. The trained model is quan
 ┌─────────────────────────────────────────────────────────────┐
 │                     DATA ACQUISITION                        │
 │                                                             │
-│   GitHub Scraper    Doc Ingestion     Teacher-Student       │
+│   GitHub Scraper    Doc Ingestion     Teacher-Student        │
 │   (repos, code)     (PDFs, HTML)      Data Factory          │
-│         │                │            (Ollama teacher)      │
+│         │                │            (DeepSeek-R1 70B +    │
+│         │                │             Qwen 2.5 Coder 32B)  │
 │         └────────────────┼────────────────┘                 │
 │                          ▼                                  │
 │                   Raw JSONL Store                            │
@@ -86,6 +102,7 @@ Designed for on-premise deployment on NVIDIA hardware. The trained model is quan
 ├── outputs/                   # GGUF files, checkpoints, Modelfile
 ├── tests/                     # Test suite
 ├── config.yaml                # Pipeline configuration
+├── Upgrade_Plan_2026_3_11.md  # Dataset strategy & teacher model plan
 └── ROADMAP.md                 # 7-phase project roadmap
 ```
 
@@ -117,14 +134,17 @@ pip install trl fastapi uvicorn httpx pydantic
 ### Run the Full Pipeline
 
 ```bash
-# 1. Generate training data (requires Ollama with teacher model)
-ollama pull qwen2.5-coder:7b
+# 1. Pull teacher models (recommended: both for optimal quality)
+ollama pull deepseek-r1:70b        # Complex reasoning, multi-turn
+ollama pull qwen2.5-coder:32b     # Bulk generation, general data
+
+# 2. Generate training data
 python -m nexifuse pipeline --num-per-domain 1500
 
-# 2. Train on all available GPUs
+# 3. Train on all available GPUs
 python -m nexifuse train-multigpu
 
-# 3. Export and deploy
+# 4. Export and deploy
 python -m nexifuse convert
 python -m nexifuse modelfile
 python -m nexifuse register
@@ -145,6 +165,66 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+## Dataset Strategy
+
+The core thesis: **a well-curated 25k-example dataset with the right mixture will outperform a 100k-example dataset with the wrong mixture on an 8B model.**
+
+### Target Composition (v1: 25,000 examples)
+
+| Category | % of Dataset | Count | Purpose |
+|----------|-------------|-------|---------|
+| **Healthcare domain** (single-turn) | 40-45% | 11,000 | Core value: Mirth XML, HL7, FHIR, EHR APIs |
+| **General assistant** (single-turn) | 25-30% | 7,000 | Prevents catastrophic forgetting (math, coding, reasoning) |
+| **Multi-turn conversations** | 15-20% | 4,500 | Debugging, clarification, iterative building |
+| **Identity & behavioral anchors** | 3-5% | 1,000 | NexiFuse persona, safety boundaries |
+| **DPO preference pairs** | 5% | 1,500 | Alignment via chosen/rejected pairs |
+
+### Teacher Model Stack (100% Local)
+
+| Teacher | VRAM | Role | Speed |
+|---------|------|------|-------|
+| **DeepSeek-R1 70B** (Q4_K_M) | ~40 GB | Complex healthcare code, multi-turn, DPO chosen | 2-5 min/example |
+| **Qwen 2.5 Coder 32B** (Q4_K_M) | ~18 GB | Bulk generation, general data, simple domain tasks | 20-60 sec/example |
+| **Student (8B)** | ~6 GB | DPO rejected responses (self-play) | Very fast |
+
+Both teachers run simultaneously on DGX Spark (128 GB) via Ollama. Total cost: $0.
+
+### Healthcare Domain Breakdown
+
+| Sub-Category | Count | Priority |
+|-------------|-------|----------|
+| Mirth Connect channel XML generation | 2,000 | P0 |
+| Rhino JavaScript transformers | 2,000 | P0 |
+| HL7 v2 message parsing & transformation | 1,500 | P0 |
+| HL7 v2 to FHIR R4 conversion | 1,500 | P0 |
+| FHIR R4 resource creation & bundles | 1,200 | P1 |
+| EHR vendor API integration (Epic, Cerner, Athena) | 1,200 | P1 |
+| Error handling & validation patterns | 800 | P1 |
+| Security, PHI-safe logging, compliance | 500 | P2 |
+| IHE profiles & DICOM | 300 | P2 |
+
+### General Assistant Categories
+
+| Category | Count |
+|----------|-------|
+| Math & arithmetic | 1,200 |
+| General coding (Python, JS, SQL) | 1,500 |
+| CS & technical Q&A | 1,200 |
+| Reasoning & comparison | 1,000 |
+| Casual conversation | 800 |
+| Summarization & explanation | 300 |
+
+### Multi-Turn Conversation Scenarios
+
+| Scenario | Examples |
+|----------|----------|
+| Debugging conversations | 1,200 |
+| Clarification dialogues | 900 |
+| Iterative code building | 900 |
+| Code review & improvement | 600 |
+| Migration guidance | 500 |
+| Step-by-step walkthroughs | 400 |
+
 ## Configuration
 
 All pipeline settings are in `config.yaml`:
@@ -160,12 +240,16 @@ training:
   learning_rate: 0.0002
   lr_scheduler: "cosine"
   num_epochs: 5
-  max_seq_length: 2048
+  max_seq_length: 4096          # Increased from 2048 for multi-turn + full XML outputs
   quantization: "nf4"
 
 data_factory:
-  model_name: "qwen2.5-coder:7b"    # Teacher model via Ollama
+  model_name: "qwen2.5-coder:7b"    # Upgrade to qwen2.5-coder:32b recommended
   domains: [hl7v2, fhir_r4, mirth, ehr_api, ihe, dicom]
+  general_categories: [math, general_knowledge, casual, general_coding, reasoning]
+  num_per_general_category: 1500
+  conversation_scenarios: [debugging, clarification, iterative, code_review, migration, walkthrough]
+  num_per_scenario_domain: 70
 
 inference:
   model_name: "nexifuse-robust-expert"
@@ -185,17 +269,6 @@ The pipeline processes data through 6 stages, with auto-detection of all raw JSO
 | Clean | `nexifuse clean` | Dedup, normalize, filter identity leakage | 9,504 |
 | Validate | `nexifuse validate` | JS/XML/HL7/FHIR syntax + security scan | 9,230 passed |
 | Format | `nexifuse format` | Chat-template with system prompt + identity | 9,302 |
-
-### Domains
-
-| Domain | Description | Examples |
-|--------|-------------|----------|
-| `hl7v2` | HL7 v2.x message parsing, segment manipulation, ADT/ORU/ORM | 1,500 |
-| `fhir_r4` | FHIR R4 resource creation, Bundle operations, search params | 1,500 |
-| `mirth` | Mirth Connect channels, transformers, filters, deployment | 1,500 |
-| `ehr_api` | Epic FHIR, Cerner, Allscripts API integrations | 1,500 |
-| `ihe` | IHE profiles (XDS, PIX, PDQ), cross-enterprise workflows | 1,500 |
-| `dicom` | DICOM networking, C-STORE/C-FIND, worklist management | 1,500 |
 
 ### Validation Engine
 
@@ -223,7 +296,7 @@ Uses Hugging Face Accelerate with DDP for distributed training across all visibl
 python -m nexifuse train-multigpu
 ```
 
-### Training Results
+### MVP Training Results (9.3k healthcare-only dataset)
 
 | Parameter | Value |
 |-----------|-------|
@@ -238,6 +311,14 @@ python -m nexifuse train-multigpu
 | Final Loss | 0.2256 |
 | Trainable Parameters | 83.9M / 8.1B (1.03%) |
 | GGUF Export | Q4_K_M — 4.6 GB |
+
+### Next Training Run (v1: 25k balanced dataset)
+
+- Increase `max_seq_length` to 4096 (already updated in config)
+- Add general assistant data (7k examples) to prevent catastrophic forgetting
+- Add multi-turn conversations (4.5k examples) for interactive debugging
+- Upgrade teacher model from Qwen 7B to Qwen 32B + DeepSeek-R1 70B
+- Add DPO alignment pass after SFT
 
 ## Model Export & Deployment
 
@@ -271,8 +352,18 @@ The Integrator is a Tauri 2 + React desktop app that connects to the inference s
 cd integrator
 cp .env.example .env    # Set VITE_AGENT_URL=http://localhost:8080
 npm install
-npm run tauri dev
+npm run tauri dev       # With display
+npm run dev:headless    # Headless (xvfb)
 ```
+
+### Settings
+
+| Field | Value |
+|-------|-------|
+| URL | `http://<server-ip>:8080` |
+| Model | `nexifuse-robust-expert` |
+| API key | *(leave empty)* |
+| Timeout | `60000` |
 
 ## CLI Reference
 
@@ -318,4 +409,4 @@ pytest tests/ -v
 
 ## License
 
-This project is proprietary. See [ROADMAP.md](ROADMAP.md) for the full technical roadmap.
+This project is proprietary. See [ROADMAP.md](ROADMAP.md) for the full technical roadmap and [Upgrade_Plan_2026_3_11.md](Upgrade_Plan_2026_3_11.md) for the detailed dataset strategy.
