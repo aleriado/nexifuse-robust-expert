@@ -65,9 +65,30 @@ def cmd_generate(args):
     from nexifuse.data_factory import generate_examples
     examples = generate_examples(
         config, output_path=args.output, docs_dir=args.docs_dir,
-        num_per_domain=args.num_per_domain,
+        num_per_domain=args.num_per_domain, num_workers=args.num_workers,
     )
     print(f"Generated {len(examples)} examples")
+
+
+def cmd_generate_general(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.data_factory import generate_general_examples
+    examples = generate_general_examples(
+        config, output_path=args.output, num_per_category=args.num_per_category,
+        num_workers=args.num_workers,
+    )
+    print(f"Generated {len(examples)} general examples")
+
+
+def cmd_generate_conversations(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.data_factory import generate_conversations
+    examples = generate_conversations(
+        config, output_path=args.output,
+        num_per_scenario_domain=args.num_per_scenario_domain,
+        num_workers=args.num_workers,
+    )
+    print(f"Generated {len(examples)} conversation examples")
 
 
 def cmd_clean(args):
@@ -101,11 +122,13 @@ def cmd_dpo(args):
 def cmd_format(args):
     from nexifuse.prompt_formatter import format_dataset
     identity_paths = list(args.identity) if getattr(args, "identity", None) else None
+    conversation_paths = list(args.conversations) if getattr(args, "conversations", None) else None
     count = format_dataset(
         args.input,
         output_path=args.output,
         template=args.template,
         identity_paths=identity_paths,
+        conversation_paths=conversation_paths,
     )
     print(f"Formatted {count} examples")
 
@@ -204,9 +227,19 @@ def cmd_pipeline(args):
     from nexifuse.scraper import scrape_repos
     scrape_repos(config, use_teacher=not args.no_teacher)
 
-    print("\n=== Stage 3: Synthetic Data Generation ===")
+    nw = getattr(args, "num_workers", 8)
+
+    print(f"\n=== Stage 3: Synthetic Data Generation ({nw} workers) ===")
     from nexifuse.data_factory import generate_examples
-    generate_examples(config, num_per_domain=args.num_per_domain)
+    generate_examples(config, num_per_domain=args.num_per_domain, num_workers=nw)
+
+    print(f"\n=== Stage 3b: General Data Generation ({nw} workers) ===")
+    from nexifuse.data_factory import generate_general_examples
+    generate_general_examples(config, num_per_category=getattr(args, "num_per_general_category", 1500), num_workers=nw)
+
+    print(f"\n=== Stage 3c: Conversation Generation ({nw} workers) ===")
+    from nexifuse.data_factory import generate_conversations
+    generate_conversations(config, num_per_scenario_domain=getattr(args, "num_per_scenario_domain", 70), num_workers=nw)
 
     print("\n=== Stage 4: Data Cleaning ===")
     from nexifuse.data_cleaner import clean_data
@@ -223,6 +256,7 @@ def cmd_pipeline(args):
     format_dataset(
         "data/validated/passed.jsonl",
         identity_paths=["data/identity/conversational.jsonl"],
+        conversation_paths=["data/raw/conversations.jsonl"],
     )
 
     print("\n=== Pipeline complete ===")
@@ -263,12 +297,24 @@ def main():
     p = sub.add_parser("generate", help="Generate synthetic training data")
     p.add_argument("-o", "--output", default="data/raw/synthetic.jsonl")
     p.add_argument("--docs-dir", default="data/docs_processed")
-    p.add_argument(
-        "--num-per-domain",
-        type=int,
-        default=500,
-        help="Synthetic examples per domain (default 500)",
-    )
+    p.add_argument("--num-per-domain", type=int, default=500,
+                   help="Synthetic examples per domain (default 500)")
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
+
+    # generate-general
+    p = sub.add_parser("generate-general", help="Generate general-purpose training data")
+    p.add_argument("-o", "--output", default="data/raw/general.jsonl")
+    p.add_argument("--num-per-category", type=int, default=1500)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
+
+    # generate-conversations
+    p = sub.add_parser("generate-conversations", help="Generate multi-turn conversations")
+    p.add_argument("-o", "--output", default="data/raw/conversations.jsonl")
+    p.add_argument("--num-per-scenario-domain", type=int, default=70)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # clean
     p = sub.add_parser("clean", help="Clean and deduplicate data")
@@ -296,6 +342,12 @@ def main():
         nargs="*",
         default=["data/identity/conversational.jsonl"],
         help="JSONL file(s) with conversational/identity examples to prepend (default: data/identity/conversational.jsonl)",
+    )
+    p.add_argument(
+        "--conversations",
+        nargs="*",
+        default=None,
+        help="JSONL file(s) with multi-turn conversation examples",
     )
 
     # train
@@ -351,10 +403,16 @@ def main():
         default=500,
         help="Synthetic examples per domain (default 500; use 6000 for 20k+ cleaned)",
     )
+    p.add_argument("--num-per-general-category", type=int, default=1500)
+    p.add_argument("--num-per-scenario-domain", type=int, default=70)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # pipeline-20k: same as pipeline but with num_per_domain=6000 for 20k+ cleaned + conversational
     p = sub.add_parser("pipeline-20k", help="Run full pipeline targeting 20k+ cleaned examples (includes identity/conversational)")
     p.add_argument("--no-teacher", action="store_true")
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
@@ -365,6 +423,8 @@ def main():
 
     commands = {
         "ingest": cmd_ingest, "scrape": cmd_scrape, "generate": cmd_generate,
+        "generate-general": cmd_generate_general,
+        "generate-conversations": cmd_generate_conversations,
         "clean": cmd_clean, "validate": cmd_validate, "dpo": cmd_dpo,
         "format": cmd_format, "train": cmd_train, "train-multigpu": cmd_train_multigpu,
         "train-dpo": cmd_train_dpo,

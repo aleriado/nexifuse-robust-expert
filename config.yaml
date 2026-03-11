@@ -16,13 +16,13 @@ training:
   lr_scheduler: "cosine"
   warmup_steps: 10
   num_epochs: 5
-  max_seq_length: 2048
+  max_seq_length: 4096
   quantization: "nf4"
   output_dir: "outputs"
   adapter_output_dir: "nexifuse_model_adapter"
 
 data_factory:
-  model_name: "qwen2.5-coder:7b"
+  model_name: "llama3:70b"
   endpoint: "http://localhost:11434/api/generate"
   context_docs_dir: "./docs"
   domains:
@@ -33,8 +33,25 @@ data_factory:
     - ihe
     - dicom
   include_cot: false
-  timeout_seconds: 90
-  max_retries: 1
+  timeout_seconds: 300
+  max_retries: 2
+  # General-purpose data generation settings (used by CLI args, not TeacherConfig fields)
+  general_categories:
+    - math
+    - general_knowledge
+    - casual
+    - general_coding
+    - reasoning
+  num_per_general_category: 1500
+  # Multi-turn conversation settings
+  conversation_scenarios:
+    - debugging
+    - clarification
+    - iterative
+    - code_review
+    - migration
+    - walkthrough
+  num_per_scenario_domain: 70
 
 scraper:
   repos:

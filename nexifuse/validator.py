@@ -306,6 +306,12 @@ def _detect_content_type(content: str) -> str:
     return "javascript"
 
 
+# General-purpose domains that skip code validation
+_GENERAL_DOMAINS = frozenset({
+    "math", "general_knowledge", "casual", "reasoning", "general_coding",
+})
+
+
 def validate_example(
     example: TrainingExample,
     config: PipelineConfig | None = None,
@@ -319,6 +325,10 @@ def validate_example(
     sec_result = scan_security(content)
     if not sec_result.passed:
         return sec_result
+
+    # General domains: skip code-specific validation
+    if example.domain in _GENERAL_DOMAINS:
+        return ValidationResult(passed=True)
 
     # Detect type and validate
     content_type = _detect_content_type(content)
@@ -335,6 +345,51 @@ def validate_example(
         return validate_javascript(content, eslint_config)
 
     return ValidationResult(passed=True)
+
+
+def validate_conversation(
+    record: dict,
+    config: PipelineConfig | None = None,
+) -> ValidationResult:
+    """Validate a multi-turn conversation record.
+
+    Checks structure and security. Only validates code in the final
+    assistant turn for healthcare domain conversations.
+    """
+    turns = record.get("turns", [])
+    if len(turns) < 2:
+        return ValidationResult(
+            passed=False, error_type="structure", error_detail="Too few turns",
+        )
+
+    # Find last assistant turn
+    last_assistant = None
+    for turn in reversed(turns):
+        if turn.get("role") == "assistant":
+            last_assistant = turn
+            break
+
+    if not last_assistant or not last_assistant.get("content", "").strip():
+        return ValidationResult(
+            passed=False, error_type="structure", error_detail="No assistant response",
+        )
+
+    content = last_assistant["content"].strip()
+
+    # Security scan on all turns
+    for turn in turns:
+        sec_result = scan_security(turn.get("content", ""))
+        if not sec_result.passed:
+            return sec_result
+
+    # For general/conversation domains, skip code validation
+    domain = record.get("domain", "")
+    if domain in _GENERAL_DOMAINS or domain in ("conversation",):
+        return ValidationResult(passed=True)
+
+    # For domain content, validate code in final assistant turn
+    example = TrainingExample(instruction="", output=content, domain=domain)
+    return validate_example(example, config)
 
 
 def validate_batch(
@@ -372,8 +427,13 @@ def validate_batch(
                 continue
 
             report.total += 1
-            example = TrainingExample.from_dict(record)
-            result = validate_example(example, config)
+
+            # Detect conversation records vs single-turn
+            if "turns" in record and isinstance(record.get("turns"), list):
+                result = validate_conversation(record, config)
+            else:
+                example = TrainingExample.from_dict(record)
+                result = validate_example(example, config)
 
             if result.passed:
                 report.passed += 1

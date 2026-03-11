@@ -44,6 +44,52 @@ class TrainingExample:
 
 
 @dataclass
+class ConversationTurn:
+    """A single turn in a multi-turn conversation."""
+
+    role: str  # "user" or "assistant"
+    content: str
+
+    def to_dict(self) -> dict:
+        return {"role": self.role, "content": self.content}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ConversationTurn:
+        return cls(role=d.get("role", ""), content=d.get("content", ""))
+
+
+@dataclass
+class ConversationExample:
+    """A multi-turn conversation for interactive training."""
+
+    turns: list[ConversationTurn] = field(default_factory=list)
+    domain: str = ""
+    scenario_type: str = ""
+    source_standard: str = ""
+    version: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "turns": [t.to_dict() for t in self.turns],
+            "domain": self.domain,
+            "scenario_type": self.scenario_type,
+            "source_standard": self.source_standard,
+            "version": self.version,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ConversationExample:
+        turns = [ConversationTurn.from_dict(t) for t in d.get("turns", [])]
+        return cls(
+            turns=turns,
+            domain=d.get("domain", ""),
+            scenario_type=d.get("scenario_type", ""),
+            source_standard=d.get("source_standard", ""),
+            version=d.get("version", ""),
+        )
+
+
+@dataclass
 class DPOPair:
     """A preference pair for Direct Preference Optimization."""
 

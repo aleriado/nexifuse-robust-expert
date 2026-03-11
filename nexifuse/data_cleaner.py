@@ -30,6 +30,11 @@ IDENTITY_NOISE_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+def _is_conversation(record: dict) -> bool:
+    """Check if a record is a multi-turn conversation."""
+    return "turns" in record and isinstance(record["turns"], list)
+
+
 def _normalize_fields(record: dict) -> dict | None:
     """Normalize field types: ensure instruction/input/output are strings."""
     for key in ("instruction", "input", "output"):
@@ -41,11 +46,31 @@ def _normalize_fields(record: dict) -> dict | None:
     return record
 
 
+def _normalize_conversation(record: dict) -> dict | None:
+    """Normalize conversation record fields. Returns None if invalid."""
+    turns = record.get("turns", [])
+    if not isinstance(turns, list) or len(turns) < 2:
+        return None
+    for turn in turns:
+        if not isinstance(turn, dict):
+            return None
+        if "role" not in turn or "content" not in turn:
+            return None
+        turn["content"] = str(turn["content"]) if turn["content"] is not None else ""
+    return record
+
+
 def _is_empty(record: dict) -> bool:
     """Check if both instruction and output are effectively empty."""
     instr = record.get("instruction", "").strip()
     output = record.get("output", "").strip()
     return not instr and not output
+
+
+def _conversation_is_empty(record: dict) -> bool:
+    """Check if conversation has fewer than 2 non-empty turns."""
+    non_empty = sum(1 for t in record.get("turns", []) if t.get("content", "").strip())
+    return non_empty < 2
 
 
 def _has_identity_noise(
@@ -63,6 +88,25 @@ def _has_identity_noise(
         if pat.search(text):
             return True
     return False
+
+
+def _conversation_has_identity_noise(
+    record: dict,
+    patterns: list[re.Pattern[str]] | None = None,
+) -> bool:
+    """Check all turns for identity noise."""
+    patterns = patterns or IDENTITY_NOISE_PATTERNS
+    text = "\n".join(t.get("content", "") for t in record.get("turns", []))
+    for pat in patterns:
+        if pat.search(text.lower()):
+            return True
+    return False
+
+
+def _conversation_content_hash(record: dict) -> str:
+    """Hash all turn contents for dedup."""
+    text = "\n".join(t.get("content", "") for t in record.get("turns", []))
+    return _content_hash(text)
 
 
 def _shingle_set(text: str, k: int = 5) -> set[str]:
@@ -137,6 +181,22 @@ def clean_data(
                     stats.malformed_skipped += 1
                     continue
 
+                # Branch: conversation records vs single-turn records
+                if _is_conversation(record):
+                    record = _normalize_conversation(record)
+                    if record is None:
+                        stats.malformed_skipped += 1
+                        continue
+                    if _conversation_is_empty(record):
+                        stats.empty_discarded += 1
+                        continue
+                    if _conversation_has_identity_noise(record, identity_patterns):
+                        stats.identity_filtered += 1
+                        logger.debug("Filtered identity noise at %s:%d", fpath, line_num)
+                        continue
+                    records.append(record)
+                    continue
+
                 record = _normalize_fields(record)
                 if record is None:
                     stats.malformed_skipped += 1
@@ -162,7 +222,7 @@ def clean_data(
     unique_records: list[dict] = []
 
     for record in records:
-        h = _content_hash(record.get("output", ""))
+        h = _conversation_content_hash(record) if _is_conversation(record) else _content_hash(record.get("output", ""))
         if h in seen_hashes:
             stats.duplicates_removed += 1
             continue
@@ -177,7 +237,8 @@ def clean_data(
     domain_groups: dict[str, list[tuple[int, set[str]]]] = {}
     for idx, record in enumerate(unique_records):
         domain = record.get("domain", "")
-        shingles = _shingle_set(record.get("output", ""))
+        text = "\n".join(t.get("content", "") for t in record.get("turns", [])) if _is_conversation(record) else record.get("output", "")
+        shingles = _shingle_set(text)
         domain_groups.setdefault(domain, []).append((idx, shingles))
 
     near_dup_indices: set[int] = set()
