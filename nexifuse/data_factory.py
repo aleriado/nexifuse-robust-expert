@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -431,6 +433,7 @@ def generate_examples(
     output_path: str | Path = "data/raw/synthetic.jsonl",
     docs_dir: str | Path = "data/docs_processed",
     num_per_domain: int = 100,
+    num_workers: int = 8,
 ) -> list[TrainingExample]:
     """Generate synthetic training examples using the teacher model.
 
@@ -438,11 +441,15 @@ def generate_examples(
     per domain and skips completed work. New examples are appended incrementally
     so progress is never lost on interruption.
 
+    Uses ThreadPoolExecutor with num_workers parallel requests to maximize
+    GPU utilization across all available GPUs.
+
     Args:
         config: Pipeline configuration.
         output_path: Where to write the output JSONL.
         docs_dir: Directory with processed documentation (from doc_ingester).
         num_per_domain: Number of examples to generate per domain.
+        num_workers: Number of parallel generation workers (default 8 for 8 GPUs).
 
     Returns:
         List of TrainingExample objects (existing + new).
@@ -477,6 +484,27 @@ def generate_examples(
 
     failed = 0
     new_count = 0
+    write_lock = threading.Lock()
+
+    def _generate_one(domain: str, context: str) -> TrainingExample | None:
+        """Generate a single example (runs in thread pool)."""
+        instruction = _generate_instruction(
+            domain, context, tc.endpoint, tc.model_name,
+            timeout=timeout, max_retries=max_retries,
+        )
+        code, cot_trace = _generate_code(
+            instruction, domain, context,
+            tc.endpoint, tc.model_name,
+            include_cot=tc.include_cot,
+            timeout=timeout, max_retries=max_retries,
+        )
+        if not code:
+            return None
+        return TrainingExample(
+            instruction=instruction, input="", output=code,
+            cot_trace=cot_trace, domain=domain,
+            source_standard=domain, version="synthetic-v1",
+        )
 
     # Open in append mode so each example is persisted immediately
     with open(output_path, "a", encoding="utf-8") as f:
@@ -490,47 +518,31 @@ def generate_examples(
                 continue
 
             context = _load_domain_context(docs_dir, domain)
-            logger.info("Generating %d examples for domain '%s' (already have %d, context: %d chars, timeout=%ds, max_retries=%d)",
-                         remaining, domain, already_done, len(context), timeout, max_retries)
+            logger.info("Generating %d examples for domain '%s' with %d workers (already have %d)",
+                         remaining, domain, num_workers, already_done)
 
-            for i in range(remaining):
-                # Stage 1: Generate instruction
-                instruction = _generate_instruction(
-                    domain, context, tc.endpoint, tc.model_name,
-                    timeout=timeout, max_retries=max_retries,
-                )
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                futures = {
+                    pool.submit(_generate_one, domain, context): i
+                    for i in range(remaining)
+                }
+                done_count = 0
+                for future in as_completed(futures):
+                    done_count += 1
+                    example = future.result()
+                    if example is None:
+                        failed += 1
+                        continue
 
-                # Stage 2: Generate code
-                code, cot_trace = _generate_code(
-                    instruction, domain, context,
-                    tc.endpoint, tc.model_name,
-                    include_cot=tc.include_cot,
-                    timeout=timeout, max_retries=max_retries,
-                )
+                    with write_lock:
+                        examples.append(example)
+                        new_count += 1
+                        f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+                        f.flush()
 
-                if not code:
-                    failed += 1
-                    continue
-
-                example = TrainingExample(
-                    instruction=instruction,
-                    input="",
-                    output=code,
-                    cot_trace=cot_trace,
-                    domain=domain,
-                    source_standard=domain,
-                    version="synthetic-v1",
-                )
-                examples.append(example)
-                new_count += 1
-
-                # Write immediately and flush so progress survives interruption
-                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
-                f.flush()
-
-                if (i + 1) % 25 == 0:
-                    logger.info("  [%s] %d/%d generated (total in file: %d)",
-                                domain, i + 1, remaining, len(examples))
+                    if done_count % 25 == 0:
+                        logger.info("  [%s] %d/%d done (total in file: %d)",
+                                    domain, done_count, remaining, len(examples))
 
     logger.info(
         "Data factory complete: %d total examples in %s (new: %d, resumed: %d, failed: %d)",
@@ -586,10 +598,11 @@ def generate_general_examples(
     config: PipelineConfig,
     output_path: str | Path = "data/raw/general.jsonl",
     num_per_category: int = 1500,
+    num_workers: int = 8,
 ) -> list[TrainingExample]:
     """Generate general-purpose training examples (math, coding, chat, reasoning).
 
-    Uses the same resume/append pattern as generate_examples().
+    Uses ThreadPoolExecutor with num_workers parallel requests.
     """
     tc = config.data_factory
     timeout = getattr(tc, "timeout_seconds", 300)
@@ -617,6 +630,24 @@ def generate_general_examples(
 
     failed = 0
     new_count = 0
+    write_lock = threading.Lock()
+
+    def _generate_one(category: str) -> TrainingExample | None:
+        """Generate a single general example (runs in thread pool)."""
+        instruction = _generate_general_instruction(
+            category, tc.endpoint, tc.model_name,
+            timeout=timeout, max_retries=max_retries,
+        )
+        response = _generate_general_response(
+            instruction, tc.endpoint, tc.model_name,
+            timeout=timeout, max_retries=max_retries,
+        )
+        if not response:
+            return None
+        return TrainingExample(
+            instruction=instruction, input="", output=response,
+            domain=category, source_standard=category, version="general-v1",
+        )
 
     with open(output_path, "a", encoding="utf-8") as f:
         for category in _GENERAL_VIBE_TEMPLATES:
@@ -628,40 +659,30 @@ def generate_general_examples(
                             category, already_done, num_per_category)
                 continue
 
-            logger.info("Generating %d general examples for '%s' (already have %d)",
-                        remaining, category, already_done)
+            logger.info("Generating %d general examples for '%s' with %d workers (already have %d)",
+                        remaining, category, num_workers, already_done)
 
-            for i in range(remaining):
-                instruction = _generate_general_instruction(
-                    category, tc.endpoint, tc.model_name,
-                    timeout=timeout, max_retries=max_retries,
-                )
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                futures = {
+                    pool.submit(_generate_one, category): i
+                    for i in range(remaining)
+                }
+                done_count = 0
+                for future in as_completed(futures):
+                    done_count += 1
+                    example = future.result()
+                    if example is None:
+                        failed += 1
+                        continue
 
-                response = _generate_general_response(
-                    instruction, tc.endpoint, tc.model_name,
-                    timeout=timeout, max_retries=max_retries,
-                )
+                    with write_lock:
+                        examples.append(example)
+                        new_count += 1
+                        f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+                        f.flush()
 
-                if not response:
-                    failed += 1
-                    continue
-
-                example = TrainingExample(
-                    instruction=instruction,
-                    input="",
-                    output=response,
-                    domain=category,
-                    source_standard=category,
-                    version="general-v1",
-                )
-                examples.append(example)
-                new_count += 1
-
-                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
-                f.flush()
-
-                if (i + 1) % 25 == 0:
-                    logger.info("  [%s] %d/%d generated", category, i + 1, remaining)
+                    if done_count % 25 == 0:
+                        logger.info("  [%s] %d/%d done", category, done_count, remaining)
 
     logger.info(
         "General data factory complete: %d total in %s (new: %d, failed: %d)",
@@ -786,11 +807,12 @@ def generate_conversations(
     config: PipelineConfig,
     output_path: str | Path = "data/raw/conversations.jsonl",
     num_per_scenario_domain: int = 70,
+    num_workers: int = 8,
 ) -> list[ConversationExample]:
     """Generate multi-turn conversation training examples.
 
     For each scenario in _MULTITURN_SCENARIOS, generates num_per_scenario_domain
-    variations. Uses resume/append pattern.
+    variations. Uses ThreadPoolExecutor with num_workers parallel requests.
     """
     tc = config.data_factory
     timeout = getattr(tc, "timeout_seconds", 300)
@@ -818,6 +840,14 @@ def generate_conversations(
 
     failed = 0
     new_count = 0
+    write_lock = threading.Lock()
+
+    def _generate_one(scenario: dict) -> ConversationExample | None:
+        """Generate a single conversation (runs in thread pool)."""
+        return _generate_conversation(
+            scenario, tc.endpoint, tc.model_name,
+            timeout=timeout, max_retries=max_retries,
+        )
 
     with open(output_path, "a", encoding="utf-8") as f:
         for scenario_type, scenarios in _MULTITURN_SCENARIOS.items():
@@ -832,28 +862,31 @@ def generate_conversations(
                                 scenario_type, domain, already_done, num_per_scenario_domain)
                     continue
 
-                logger.info("Generating %d conversations for '%s:%s' (already have %d)",
-                            remaining, scenario_type, domain, already_done)
+                logger.info("Generating %d conversations for '%s:%s' with %d workers (already have %d)",
+                            remaining, scenario_type, domain, num_workers, already_done)
 
-                for i in range(remaining):
-                    conv = _generate_conversation(
-                        scenario, tc.endpoint, tc.model_name,
-                        timeout=timeout, max_retries=max_retries,
-                    )
+                with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                    futures = {
+                        pool.submit(_generate_one, scenario): i
+                        for i in range(remaining)
+                    }
+                    done_count = 0
+                    for future in as_completed(futures):
+                        done_count += 1
+                        conv = future.result()
+                        if conv is None:
+                            failed += 1
+                            continue
 
-                    if conv is None:
-                        failed += 1
-                        continue
+                        with write_lock:
+                            examples.append(conv)
+                            new_count += 1
+                            f.write(json.dumps(conv.to_dict(), ensure_ascii=False) + "\n")
+                            f.flush()
 
-                    examples.append(conv)
-                    new_count += 1
-
-                    f.write(json.dumps(conv.to_dict(), ensure_ascii=False) + "\n")
-                    f.flush()
-
-                    if (i + 1) % 10 == 0:
-                        logger.info("  [%s:%s] %d/%d generated",
-                                    scenario_type, domain, i + 1, remaining)
+                        if done_count % 10 == 0:
+                            logger.info("  [%s:%s] %d/%d done",
+                                        scenario_type, domain, done_count, remaining)
 
     logger.info(
         "Conversation factory complete: %d total in %s (new: %d, failed: %d)",
