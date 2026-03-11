@@ -365,40 +365,202 @@ npm run dev:headless    # Headless (xvfb)
 | API key | *(leave empty)* |
 | Timeout | `60000` |
 
-## CLI Reference
+## Pipeline Commands Reference
+
+All commands are run with `python -m nexifuse <command>`. Global flags: `-v` (verbose), `-c <path>` (config file, default: `config.yaml`).
+
+### Step 1: Data Acquisition
+
+#### `ingest` — Extract text from documentation
+
+```bash
+python -m nexifuse ingest --docs-dir docs --output-dir data/docs_processed
+```
+
+Reads PDFs, HTML, and text files from `docs/` (organized by domain: hl7v2, fhir_r4, mirth, ehr_api, ihe, dicom). Outputs cleaned text files to `data/docs_processed/` for use as context during synthetic data generation.
+
+#### `scrape` — Clone GitHub repos and extract code examples
+
+```bash
+python -m nexifuse scrape -o data/raw/scraped.jsonl --repos-dir data/repos
+python -m nexifuse scrape --no-teacher   # Skip teacher model instruction synthesis
+```
+
+Clones repos defined in `config.yaml` → `scraper.repos` (e.g., Mirth Connect examples), extracts code matching `file_patterns` (*.js, *.xml, *.json), scrubs PHI via regex, and optionally uses the teacher model to generate instruction-output pairs. Output: `data/raw/scraped.jsonl`.
+
+#### `generate` — Synthetic healthcare domain examples
+
+```bash
+python -m nexifuse generate --num-per-domain 1500 -w 8 -o data/raw/synthetic.jsonl
+```
+
+Uses the teacher model (configured in `config.yaml` → `data_factory.model_name`) to generate instruction-output pairs for each domain (hl7v2, fhir_r4, mirth, ehr_api, ihe, dicom). Supports resume — if the output file exists, it counts existing examples per domain and continues from where it left off. Output: `data/raw/synthetic.jsonl`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--num-per-domain` | 500 | Examples per domain (6 domains × N) |
+| `-w, --num-workers` | 8 | Parallel generation threads |
+| `-o, --output` | `data/raw/synthetic.jsonl` | Output path |
+
+#### `generate-general` — General assistant examples
+
+```bash
+python -m nexifuse generate-general --num-per-category 1500 -w 8 -o data/raw/general.jsonl
+```
+
+Generates examples across 5 categories defined in `config.yaml` → `general_categories`: math, general_knowledge, casual, general_coding, reasoning. Prevents catastrophic forgetting of base model capabilities. Output: `data/raw/general.jsonl`.
+
+#### `generate-conversations` — Multi-turn conversation examples
+
+```bash
+python -m nexifuse generate-conversations --num-per-scenario-domain 70 -w 8 -o data/raw/conversations.jsonl
+```
+
+Generates multi-turn conversations (3-8 turns each) across 6 scenarios × 6 domains defined in `config.yaml` → `conversation_scenarios`: debugging, clarification, iterative, code_review, migration, walkthrough. Output: `data/raw/conversations.jsonl`.
+
+### Step 2: Data Processing
+
+#### `clean` — Deduplicate, normalize, and filter
+
+```bash
+python -m nexifuse clean                                    # Auto-detect all data/raw/*.jsonl
+python -m nexifuse clean -i data/raw/synthetic.jsonl data/raw/general.jsonl  # Specific files
+python -m nexifuse clean --threshold 0.85                   # Adjust dedup similarity threshold
+```
+
+Auto-detects all `data/raw/*.jsonl` files (or accepts explicit `-i` paths). Runs 4 stages: dedup by cosine similarity, normalization, identity/persona filtering, and output writing. Output: `data/cleaned/cleaned.jsonl`.
+
+#### `validate` — Multi-format syntax + security validation
+
+```bash
+python -m nexifuse validate -i data/cleaned/cleaned.jsonl
+```
+
+Validates each example's output against format-specific rules (JavaScript bracket matching, XML well-formedness, HL7 v2 segment structure, FHIR R4 JSON schema, SQL injection detection). Splits into passed and failed sets. Output: `data/validated/passed.jsonl` + `data/validated/failed.jsonl`.
+
+#### `dpo` — Generate DPO preference pairs
+
+```bash
+python -m nexifuse dpo --passed data/validated/passed.jsonl --failed data/validated/failed.jsonl -o data/dpo/dpo_pairs.jsonl
+```
+
+Creates chosen/rejected preference pairs from validated pass/fail splits for Direct Preference Optimization alignment training. Output: `data/dpo/dpo_pairs.jsonl`.
+
+#### `format` — Apply chat template for training
+
+```bash
+python -m nexifuse format -i data/validated/passed.jsonl -o data/formatted/train.jsonl --template llama
+python -m nexifuse format --identity data/identity/conversational.jsonl --conversations data/raw/conversations.jsonl
+```
+
+Wraps each example in Llama 3 (or ChatML) chat template with system prompt and NexiFuse identity anchors. Merges single-turn, multi-turn conversations, and identity examples into one training file. Output: `data/formatted/train.jsonl`.
+
+### Step 3: Training
+
+#### `train` — Single-GPU SFT fine-tuning
+
+```bash
+python -m nexifuse train -i data/formatted/train.jsonl
+```
+
+Runs LoRA SFT fine-tuning with Unsloth on one GPU. Uses settings from `config.yaml` → `training` (base model, LoRA rank/alpha, learning rate, epochs, etc.). Output: LoRA adapter in `nexifuse_model_adapter/`.
+
+#### `train-multigpu` — Multi-GPU distributed training (recommended)
+
+```bash
+python -m nexifuse train-multigpu -i data/formatted/train.jsonl
+python -m nexifuse train-multigpu -n 4   # Use only 4 GPUs
+```
+
+Launches training via Hugging Face Accelerate DDP across all visible GPUs. Automatically detects GPU count (override with `-n`). Effective batch size = `batch_size × gradient_accumulation × num_gpus`. Output: LoRA adapter in `nexifuse_model_adapter/`.
+
+#### `train-dpo` — DPO alignment (after SFT)
+
+```bash
+python -m nexifuse train-dpo -i data/dpo/dpo_pairs.jsonl --adapter nexifuse_model_adapter
+```
+
+Runs Direct Preference Optimization on DPO pairs using the SFT adapter as starting point. Output: Updated adapter in `nexifuse_model_adapter/`.
+
+### Step 4: Export & Deployment
+
+#### `merge` — Merge LoRA adapter into base model
+
+```bash
+python -m nexifuse merge --adapter nexifuse_model_adapter -o outputs/merged_model
+```
+
+Merges the LoRA adapter weights into the full base model. Required if using llama.cpp for manual GGUF conversion. Output: `outputs/merged_model/`.
+
+#### `convert` — LoRA → GGUF conversion
+
+```bash
+python -m nexifuse convert --adapter nexifuse_model_adapter -o outputs --quant q4_k_m
+```
+
+Converts the LoRA adapter directly to GGUF format via Unsloth (or falls back to llama.cpp). Quantization options: `q4_k_m` (4.6 GB, recommended), `q5_k_m`, `q8_0`, `f16`. Output: `outputs/nexifuse-q4km.gguf`.
+
+#### `modelfile` — Generate Ollama Modelfile
+
+```bash
+python -m nexifuse modelfile --gguf outputs/nexifuse-q4km.gguf -o outputs/Modelfile
+```
+
+Generates an Ollama Modelfile with the Llama 3 chat template, system prompt, and inference parameters. Output: `outputs/Modelfile`.
+
+#### `register` — Register model with Ollama
+
+```bash
+python -m nexifuse register --modelfile outputs/Modelfile --name nexifuse-robust-expert
+```
+
+Runs `ollama create` to register the GGUF model. After this, `ollama list` will show `nexifuse-robust-expert`.
+
+#### `serve` — Start OpenAI-compatible inference server
+
+```bash
+python -m nexifuse serve
+```
+
+Starts a FastAPI server (default `0.0.0.0:8080`) that proxies to Ollama with an OpenAI-compatible API. Endpoints: `/health`, `/v1/models`, `/v1/chat/completions` (streaming supported). Configure host/port in `config.yaml` → `inference`.
+
+### Shortcuts
+
+#### `pipeline` — Run full data pipeline in one command
+
+```bash
+python -m nexifuse pipeline --num-per-domain 1500 -w 8
+```
+
+Runs all 6 stages sequentially: ingest → scrape → generate (domain + general + conversations) → clean → validate → format. The recommended way to build the full dataset from scratch.
+
+#### `pipeline-20k` — Target 20k+ cleaned examples
+
+```bash
+python -m nexifuse pipeline-20k -w 8
+```
+
+Same as `pipeline` but with `--num-per-domain 6000` and `--no-teacher` for scraping (faster). Targets 20k+ cleaned examples after dedup and validation.
+
+### Data Flow Summary
 
 ```
-nexifuse <command> [options]
+docs/                  →  ingest   →  data/docs_processed/
+GitHub repos           →  scrape   →  data/raw/scraped.jsonl
+Teacher model (domain) →  generate →  data/raw/synthetic.jsonl
+Teacher model (general)→  generate-general      →  data/raw/general.jsonl
+Teacher model (conv.)  →  generate-conversations →  data/raw/conversations.jsonl
 
-Data Pipeline:
-  ingest           Ingest documentation from docs/
-  scrape           Scrape GitHub repos for training data
-  generate         Generate synthetic examples via teacher model
-  clean            Clean and deduplicate raw data
-  validate         Run multi-format validation
-  dpo              Generate DPO preference pairs
-  format           Format data into chat templates
+data/raw/*.jsonl       →  clean    →  data/cleaned/cleaned.jsonl
+data/cleaned/          →  validate →  data/validated/{passed,failed}.jsonl
+data/validated/        →  dpo      →  data/dpo/dpo_pairs.jsonl
+data/validated/passed  →  format   →  data/formatted/train.jsonl
 
-Training:
-  train            SFT fine-tuning (single GPU)
-  train-multigpu   SFT on all GPUs via Accelerate DDP
-  train-dpo        DPO alignment training
-
-Export & Deploy:
-  merge            Merge LoRA adapter into full model
-  convert          Convert LoRA to GGUF format
-  quantize         Quantize model (alias for convert)
-  modelfile        Generate Ollama Modelfile
-  register         Register model with Ollama
-  serve            Start inference server
-
-Shortcuts:
-  pipeline         Run full data pipeline (ingest → format)
-  pipeline-20k     Run pipeline targeting 20k+ examples
-
-Global Options:
-  -v, --verbose    Enable debug logging
-  -c, --config     Config file path (default: config.yaml)
+data/formatted/train   →  train / train-multigpu →  nexifuse_model_adapter/
+nexifuse_model_adapter →  convert  →  outputs/nexifuse-q4km.gguf
+outputs/*.gguf         →  modelfile → outputs/Modelfile
+outputs/Modelfile      →  register →  Ollama model registry
+Ollama                 →  serve    →  http://0.0.0.0:8080
 ```
 
 ## Tests
