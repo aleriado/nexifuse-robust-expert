@@ -110,15 +110,18 @@ def clean_data(
     records: list[dict] = []
 
     # Stage 1: Read and normalize all input files
-    for fpath in input_paths:
+    logger.info("[Stage 1/4] Reading and normalizing input files...")
+    for file_idx, fpath in enumerate(input_paths, 1):
         fpath = Path(fpath)
         if not fpath.exists():
             logger.warning("Input file not found: %s", fpath)
             continue
 
+        file_rows = 0
         with open(fpath, encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
                 stats.input_rows += 1
+                file_rows += 1
                 line = line.strip()
                 if not line:
                     continue
@@ -150,7 +153,11 @@ def clean_data(
 
                 records.append(record)
 
+        logger.info("  [%d/%d] %s: %d rows read, %d kept",
+                     file_idx, len(input_paths), fpath.name, file_rows, len(records))
+
     # Stage 2: Exact dedup by output hash
+    logger.info("[Stage 2/4] Exact dedup (%d records)...", len(records))
     seen_hashes: set[str] = set()
     unique_records: list[dict] = []
 
@@ -161,9 +168,12 @@ def clean_data(
             continue
         seen_hashes.add(h)
         unique_records.append(record)
+    logger.info("  Exact dedup: %d → %d (removed %d)",
+                len(records), len(unique_records), len(records) - len(unique_records))
 
     # Stage 3: Near-duplicate detection via shingle Jaccard
     # For performance, only compare within same domain
+    logger.info("[Stage 3/4] Near-duplicate detection (threshold=%.2f)...", similarity_threshold)
     domain_groups: dict[str, list[tuple[int, set[str]]]] = {}
     for idx, record in enumerate(unique_records):
         domain = record.get("domain", "")
@@ -172,6 +182,7 @@ def clean_data(
 
     near_dup_indices: set[int] = set()
     for domain, items in domain_groups.items():
+        domain_dups_before = len(near_dup_indices)
         for i in range(len(items)):
             if items[i][0] in near_dup_indices:
                 continue
@@ -182,8 +193,11 @@ def clean_data(
                 if sim >= similarity_threshold:
                     near_dup_indices.add(items[j][0])
                     stats.duplicates_removed += 1
+        domain_dups = len(near_dup_indices) - domain_dups_before
+        logger.info("  [%s] %d items, %d near-duplicates found", domain, len(items), domain_dups)
 
     # Stage 4: Write cleaned output
+    logger.info("[Stage 4/4] Writing cleaned output...")
     with open(output_path, "w", encoding="utf-8") as f:
         for idx, record in enumerate(unique_records):
             if idx in near_dup_indices:

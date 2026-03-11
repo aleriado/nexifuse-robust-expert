@@ -25,12 +25,32 @@ logger = logging.getLogger(__name__)
 
 # --- Security patterns ---
 _SECURITY_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)select\s+.*\s+from\s+.*\s+where\s+.*['\"]?\s*\+", "Possible SQL injection"),
+]
+
+# Placeholder/example values commonly found in training data — NOT real credentials
+_SECURITY_ALLOWLIST: list[re.Pattern[str]] = [
+    # Example SSNs and MRN-like patterns in HL7/FHIR sample messages
+    re.compile(r"123-45-6789|000-00-0000|999-99-9999|111-11-1111|987-65-4321|456-78-9012"),
+    re.compile(r"(?i)(SSN|MRN|PID|HL7|FHIR|segment|message)"),
+    # Placeholder tokens/passwords/secrets in example code
+    re.compile(
+        r"(?i)(YOUR_|REPLACE_|EXAMPLE_|PLACEHOLDER|TODO|INSERT|CHANGE_ME|"
+        r"your[_-]?(access|api|auth|fhir|endpoint)|xxxx|XYZ123|abc123|abcdef|"
+        r"secureP@ss|samplePass|secureSecret|"
+        r"test[_-]?password|my[_-]?(password|secret|custom)|client[_-]?(secret|id)|"
+        r"\"password\"|\"secret\"|\"username\"|DriverManager|JDBC|"
+        r"Bearer\s+token|Authorization.*Bearer)",
+    ),
+]
+
+# Strict patterns — only flag if NOT matching the allowlist
+_STRICT_SECURITY_PATTERNS: list[tuple[str, str]] = [
     (r"\d{3}-\d{2}-\d{4}", "Possible SSN"),
     (r"password\s*[:=]\s*['\"][^'\"]+['\"]", "Hardcoded password"),
     (r"api[_-]?key\s*[:=]\s*['\"][^'\"]+['\"]", "Hardcoded API key"),
     (r"secret\s*[:=]\s*['\"][^'\"]+['\"]", "Hardcoded secret"),
     (r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", "Hardcoded bearer token"),
-    (r"(?i)select\s+.*\s+from\s+.*\s+where\s+.*['\"]?\s*\+", "Possible SQL injection"),
 ]
 
 # HL7 v2 required fields by message type
@@ -218,12 +238,43 @@ def validate_fhir_r4(content: str, schema_dir: str | None = None) -> ValidationR
     return ValidationResult(passed=True)
 
 
+def _is_allowlisted(content: str, match: re.Match) -> bool:
+    """Check if a security match is a known placeholder/example value."""
+    # Check surrounding context (80 chars around the match)
+    start = max(0, match.start() - 40)
+    end = min(len(content), match.end() + 40)
+    context = content[start:end]
+    for allow_pat in _SECURITY_ALLOWLIST:
+        if allow_pat.search(context):
+            return True
+    return False
+
+
 def scan_security(content: str) -> ValidationResult:
-    """Scan content for security issues: hardcoded creds, PHI, SQL injection."""
+    """Scan content for security issues: hardcoded creds, PHI, SQL injection.
+
+    Allows placeholder/example values commonly found in training data
+    (e.g. 123-45-6789, Bearer YOUR_ACCESS_TOKEN, password = "example").
+    """
+    # Always-flag patterns (no allowlist, e.g. SQL injection)
     for pattern, description in _SECURITY_PATTERNS:
         try:
             match = re.search(pattern, content, re.IGNORECASE)
             if match:
+                line_num = content[:match.start()].count("\n") + 1
+                return ValidationResult(
+                    passed=False, error_type="security",
+                    error_detail=f"{description} at line {line_num}",
+                    line_number=line_num,
+                )
+        except re.error:
+            continue
+
+    # Strict patterns — flag only if NOT a known placeholder
+    for pattern, description in _STRICT_SECURITY_PATTERNS:
+        try:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match and not _is_allowlisted(content, match):
                 line_num = content[:match.start()].count("\n") + 1
                 return ValidationResult(
                     passed=False, error_type="security",

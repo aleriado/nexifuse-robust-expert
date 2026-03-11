@@ -72,7 +72,11 @@ def cmd_generate(args):
 
 def cmd_clean(args):
     from nexifuse.data_cleaner import clean_data
-    input_paths = args.input if args.input else ["data/raw/scraped.jsonl", "data/raw/synthetic.jsonl"]
+    input_paths = args.input if args.input else sorted(str(p) for p in Path("data/raw").glob("*.jsonl"))
+    if not input_paths:
+        print("No JSONL files found in data/raw/")
+        return
+    print(f"Cleaning {len(input_paths)} files: {[Path(p).name for p in input_paths]}")
     stats = clean_data(input_paths, output_path=args.output, similarity_threshold=args.threshold)
     print(f"Cleaning: {stats.input_rows} → {stats.output_rows} rows")
 
@@ -206,7 +210,9 @@ def cmd_pipeline(args):
 
     print("\n=== Stage 4: Data Cleaning ===")
     from nexifuse.data_cleaner import clean_data
-    clean_data(["data/raw/scraped.jsonl", "data/raw/synthetic.jsonl"])
+    raw_files = sorted(str(p) for p in Path("data/raw").glob("*.jsonl"))
+    print(f"  Cleaning {len(raw_files)} files: {[Path(p).name for p in raw_files]}")
+    clean_data(raw_files)
 
     print("\n=== Stage 5: Validation ===")
     from nexifuse.validator import validate_batch
