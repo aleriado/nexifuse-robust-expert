@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//tmp/**)",
+      "Bash(pkill -f nexifuse.*train)",
+      "Bash(nvidia-smi --query-compute-apps=pid,used_memory --format=csv)",
+      "Bash(nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv)"
+    ]
+  }
+}
