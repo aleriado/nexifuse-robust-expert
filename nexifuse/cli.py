@@ -65,7 +65,7 @@ def cmd_generate(args):
     from nexifuse.data_factory import generate_examples
     examples = generate_examples(
         config, output_path=args.output, docs_dir=args.docs_dir,
-        num_per_domain=args.num_per_domain,
+        num_per_domain=args.num_per_domain, num_workers=args.num_workers,
     )
     print(f"Generated {len(examples)} examples")
 
@@ -75,6 +75,7 @@ def cmd_generate_general(args):
     from nexifuse.data_factory import generate_general_examples
     examples = generate_general_examples(
         config, output_path=args.output, num_per_category=args.num_per_category,
+        num_workers=args.num_workers,
     )
     print(f"Generated {len(examples)} general examples")
 
@@ -85,6 +86,7 @@ def cmd_generate_conversations(args):
     examples = generate_conversations(
         config, output_path=args.output,
         num_per_scenario_domain=args.num_per_scenario_domain,
+        num_workers=args.num_workers,
     )
     print(f"Generated {len(examples)} conversation examples")
 
@@ -225,17 +227,19 @@ def cmd_pipeline(args):
     from nexifuse.scraper import scrape_repos
     scrape_repos(config, use_teacher=not args.no_teacher)
 
-    print("\n=== Stage 3: Synthetic Data Generation ===")
+    nw = getattr(args, "num_workers", 8)
+
+    print(f"\n=== Stage 3: Synthetic Data Generation ({nw} workers) ===")
     from nexifuse.data_factory import generate_examples
-    generate_examples(config, num_per_domain=args.num_per_domain)
+    generate_examples(config, num_per_domain=args.num_per_domain, num_workers=nw)
 
-    print("\n=== Stage 3b: General Data Generation ===")
+    print(f"\n=== Stage 3b: General Data Generation ({nw} workers) ===")
     from nexifuse.data_factory import generate_general_examples
-    generate_general_examples(config, num_per_category=getattr(args, "num_per_general_category", 1500))
+    generate_general_examples(config, num_per_category=getattr(args, "num_per_general_category", 1500), num_workers=nw)
 
-    print("\n=== Stage 3c: Conversation Generation ===")
+    print(f"\n=== Stage 3c: Conversation Generation ({nw} workers) ===")
     from nexifuse.data_factory import generate_conversations
-    generate_conversations(config, num_per_scenario_domain=getattr(args, "num_per_scenario_domain", 70))
+    generate_conversations(config, num_per_scenario_domain=getattr(args, "num_per_scenario_domain", 70), num_workers=nw)
 
     print("\n=== Stage 4: Data Cleaning ===")
     from nexifuse.data_cleaner import clean_data
@@ -293,22 +297,24 @@ def main():
     p = sub.add_parser("generate", help="Generate synthetic training data")
     p.add_argument("-o", "--output", default="data/raw/synthetic.jsonl")
     p.add_argument("--docs-dir", default="data/docs_processed")
-    p.add_argument(
-        "--num-per-domain",
-        type=int,
-        default=500,
-        help="Synthetic examples per domain (default 500)",
-    )
+    p.add_argument("--num-per-domain", type=int, default=500,
+                   help="Synthetic examples per domain (default 500)")
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # generate-general
     p = sub.add_parser("generate-general", help="Generate general-purpose training data")
     p.add_argument("-o", "--output", default="data/raw/general.jsonl")
     p.add_argument("--num-per-category", type=int, default=1500)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # generate-conversations
     p = sub.add_parser("generate-conversations", help="Generate multi-turn conversations")
     p.add_argument("-o", "--output", default="data/raw/conversations.jsonl")
     p.add_argument("--num-per-scenario-domain", type=int, default=70)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # clean
     p = sub.add_parser("clean", help="Clean and deduplicate data")
@@ -399,10 +405,14 @@ def main():
     )
     p.add_argument("--num-per-general-category", type=int, default=1500)
     p.add_argument("--num-per-scenario-domain", type=int, default=70)
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     # pipeline-20k: same as pipeline but with num_per_domain=6000 for 20k+ cleaned + conversational
     p = sub.add_parser("pipeline-20k", help="Run full pipeline targeting 20k+ cleaned examples (includes identity/conversational)")
     p.add_argument("--no-teacher", action="store_true")
+    p.add_argument("-w", "--num-workers", type=int, default=8,
+                   help="Parallel generation workers (default 8)")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
