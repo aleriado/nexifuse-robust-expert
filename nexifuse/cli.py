@@ -76,6 +76,7 @@ def cmd_generate_general(args):
     examples = generate_general_examples(
         config, output_path=args.output, num_per_category=args.num_per_category,
         num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
     )
     print(f"Generated {len(examples)} general examples")
 
@@ -87,6 +88,7 @@ def cmd_generate_conversations(args):
         config, output_path=args.output,
         num_per_scenario_domain=args.num_per_scenario_domain,
         num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
     )
     print(f"Generated {len(examples)} conversation examples")
 
@@ -308,6 +310,8 @@ def main():
     p.add_argument("--num-per-category", type=int, default=1500)
     p.add_argument("-w", "--num-workers", type=int, default=8,
                    help="Parallel generation workers (default 8)")
+    p.add_argument("--model", type=str, default=None,
+                   help="Override teacher model (e.g. llama3:8b for faster generation)")
 
     # generate-conversations
     p = sub.add_parser("generate-conversations", help="Generate multi-turn conversations")
@@ -315,6 +319,8 @@ def main():
     p.add_argument("--num-per-scenario-domain", type=int, default=70)
     p.add_argument("-w", "--num-workers", type=int, default=8,
                    help="Parallel generation workers (default 8)")
+    p.add_argument("--model", type=str, default=None,
+                   help="Override teacher model (e.g. llama3:8b for faster generation)")
 
     # clean
     p = sub.add_parser("clean", help="Clean and deduplicate data")
