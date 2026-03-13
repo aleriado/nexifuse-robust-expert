@@ -345,6 +345,7 @@ def _call_teacher(
                     "model": model,
                     "prompt": prompt,
                     "stream": False,
+                    "keep_alive": "24h",
                     "options": {"temperature": temperature},
                 },
                 timeout=timeout,
@@ -599,16 +600,20 @@ def generate_general_examples(
     output_path: str | Path = "data/raw/general.jsonl",
     num_per_category: int = 1500,
     num_workers: int = 8,
+    model_override: str | None = None,
 ) -> list[TrainingExample]:
     """Generate general-purpose training examples (math, coding, chat, reasoning).
 
     Uses ThreadPoolExecutor with num_workers parallel requests.
     """
     tc = config.data_factory
+    model_name = model_override or tc.model_name
     timeout = getattr(tc, "timeout_seconds", 300)
     max_retries = getattr(tc, "max_retries", 2)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Using model: %s for general data generation", model_name)
 
     # Resume support
     existing_counts: dict[str, int] = {}
@@ -635,11 +640,11 @@ def generate_general_examples(
     def _generate_one(category: str) -> TrainingExample | None:
         """Generate a single general example (runs in thread pool)."""
         instruction = _generate_general_instruction(
-            category, tc.endpoint, tc.model_name,
+            category, tc.endpoint, model_name,
             timeout=timeout, max_retries=max_retries,
         )
         response = _generate_general_response(
-            instruction, tc.endpoint, tc.model_name,
+            instruction, tc.endpoint, model_name,
             timeout=timeout, max_retries=max_retries,
         )
         if not response:
@@ -808,6 +813,7 @@ def generate_conversations(
     output_path: str | Path = "data/raw/conversations.jsonl",
     num_per_scenario_domain: int = 70,
     num_workers: int = 8,
+    model_override: str | None = None,
 ) -> list[ConversationExample]:
     """Generate multi-turn conversation training examples.
 
@@ -815,10 +821,13 @@ def generate_conversations(
     variations. Uses ThreadPoolExecutor with num_workers parallel requests.
     """
     tc = config.data_factory
+    model_name = model_override or tc.model_name
     timeout = getattr(tc, "timeout_seconds", 300)
     max_retries = getattr(tc, "max_retries", 2)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Using model: %s for conversation generation", model_name)
 
     # Resume support — count by scenario_type+domain
     existing_counts: dict[str, int] = {}
@@ -845,7 +854,7 @@ def generate_conversations(
     def _generate_one(scenario: dict) -> ConversationExample | None:
         """Generate a single conversation (runs in thread pool)."""
         return _generate_conversation(
-            scenario, tc.endpoint, tc.model_name,
+            scenario, tc.endpoint, model_name,
             timeout=timeout, max_retries=max_retries,
         )
 
