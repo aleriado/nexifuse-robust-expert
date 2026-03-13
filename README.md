@@ -6,26 +6,56 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Highlights
 
-- **25k target dataset** with balanced mixture: 40-45% healthcare domain, 25-30% general assistant, 15-20% multi-turn conversations, 3-5% identity anchors
-- **Dual teacher model stack** — DeepSeek-R1 70B (complex reasoning) + Qwen 2.5 Coder 32B (bulk generation), both running locally via Ollama
+- **MVP deployed, v1 training in progress** — following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md) to build a balanced Robust Expert
+- **22k+ raw examples generated** — 57% healthcare, 34% general assistant, 5% multi-turn, 2.5% scraped code
+- **Dual teacher model stack** — Llama 3 70B (complex reasoning) + Llama 3 8B (bulk generation), both running locally via Ollama
 - **Multi-GPU distributed training** via Accelerate DDP — 8x NVIDIA L4 cluster
-- **97% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
+- **97.8% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
 - **End-to-end CLI pipeline** — from data ingestion to model serving in one tool
 - **OpenAI-compatible API** — drop-in replacement for any OpenAI client
 - **100% local, 100% free** — all training, generation, and inference on-premise
 
 ## Current Status
 
+Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md) to evolve from MVP to production-ready v1.
+
+### Milestones
+
+| Milestone | Status | Details |
+|-----------|--------|---------|
+| **MVP** (8-12k examples) | COMPLETE | 9.3k healthcare-only dataset. Model deployed via Ollama. Proved pipeline works end-to-end. |
+| **v1** (20-30k examples) | IN PROGRESS | 22.1k raw generated → 18k cleaned → 17.6k validated. Training on balanced dataset underway. |
+| **Production** (50-80k examples) | PLANNED | Full vendor coverage, DPO alignment, edge-case hardening. |
+
+### v1 Progress (per [Upgrade Plan](Upgrade_Plan_2026_3_11.md))
+
 | Phase | Status | Details |
 |-------|--------|---------|
-| Phase 0: Environment Setup | COMPLETE | DGX Spark / GCP L4 cluster ready |
-| Phase 1: Documentation Corpus | COMPLETE | docs/ organized by domain |
-| Phase 2: Data Generation | IN PROGRESS | 9.3k healthcare examples done; general + multi-turn data planned (v1 target: 25k) |
-| Phase 3: Data Processing | COMPLETE | Pipeline works: clean → validate → format |
-| Phase 4: Model Training (MVP) | COMPLETE | 8B model trained on 9.3k examples, loss 0.2256 |
-| Phase 5: Model Export | COMPLETE | GGUF Q4_K_M (4.6 GB) exported |
-| Phase 6: Deployment | COMPLETE | Ollama + FastAPI server + Integrator app |
-| Phase 7: Iterative Improvement | IN PROGRESS | Expanding dataset with general + multi-turn data |
+| Data Generation | COMPLETE | 22,124 raw examples across all categories |
+| Data Cleaning | COMPLETE | 18,055 examples after dedup + normalization |
+| Validation | COMPLETE | 17,661 passed (97.8% pass rate) |
+| Formatting | COMPLETE | 35,394 training examples (with identity anchors) |
+| v1 Training | IN PROGRESS | Step 3,000/13,275 (22.6%), loss 0.205 |
+| v1 Export | PENDING | Re-export GGUF Q4_K_M after training completes |
+| DPO Alignment | PENDING | Generate preference pairs, then train-dpo |
+
+### Dataset Composition (v1)
+
+| Source | File | Count | % of Raw |
+|--------|------|-------|----------|
+| Healthcare domain (synthetic) | `synthetic_run1.jsonl` | 12,600 | 57% |
+| General assistant (5 categories) | `general.jsonl` | 7,500 | 34% |
+| Multi-turn conversations (6 scenarios) | `conversations.jsonl` | 1,116 | 5% |
+| GitHub scraped code | `scraped.jsonl` | 547 | 2.5% |
+| Domain synthetic (early run) | `synthetic.jsonl` | 361 | 1.5% |
+| **Total raw** | | **22,124** | |
+
+| Processing Stage | File | Count |
+|-----------------|------|-------|
+| After cleaning | `cleaned.jsonl` | 18,055 |
+| After validation (passed) | `passed.jsonl` | 17,661 |
+| After validation (failed) | `failed.jsonl` | 394 |
+| After formatting (with identity + conversations) | `train.jsonl` | 35,394 |
 
 ## Architecture
 
@@ -244,7 +274,7 @@ training:
   quantization: "nf4"
 
 data_factory:
-  model_name: "qwen2.5-coder:7b"    # Upgrade to qwen2.5-coder:32b recommended
+  model_name: "llama3:70b"           # Primary teacher model
   domains: [hl7v2, fhir_r4, mirth, ehr_api, ihe, dicom]
   general_categories: [math, general_knowledge, casual, general_coding, reasoning]
   num_per_general_category: 1500
@@ -264,11 +294,13 @@ The pipeline processes data through 6 stages, with auto-detection of all raw JSO
 | Stage | Command | Description | Current Count |
 |-------|---------|-------------|---------------|
 | Ingest | `nexifuse ingest` | Extract text from PDFs, HTML, API specs | — |
-| Scrape | `nexifuse scrape` | Clone GitHub repos, extract code examples | ~500 |
-| Generate | `nexifuse generate` | Synthetic examples via teacher model | 9,000 |
-| Clean | `nexifuse clean` | Dedup, normalize, filter identity leakage | 9,504 |
-| Validate | `nexifuse validate` | JS/XML/HL7/FHIR syntax + security scan | 9,230 passed |
-| Format | `nexifuse format` | Chat-template with system prompt + identity | 9,302 |
+| Scrape | `nexifuse scrape` | Clone GitHub repos, extract code examples | 547 |
+| Generate | `nexifuse generate` | Healthcare domain examples via teacher model | 12,961 |
+| Generate | `nexifuse generate-general` | General assistant examples (5 categories) | 7,500 |
+| Generate | `nexifuse generate-conversations` | Multi-turn conversations (6 scenarios) | 1,116 |
+| Clean | `nexifuse clean` | Dedup, normalize, filter identity leakage | 18,055 |
+| Validate | `nexifuse validate` | JS/XML/HL7/FHIR syntax + security scan | 17,661 passed |
+| Format | `nexifuse format` | Chat-template with system prompt + identity | 35,394 |
 
 ### Validation Engine
 
@@ -296,7 +328,34 @@ Uses Hugging Face Accelerate with DDP for distributed training across all visibl
 python -m nexifuse train-multigpu
 ```
 
-### MVP Training Results (9.3k healthcare-only dataset)
+### Training Results
+
+#### MVP (Complete — deployed)
+
+| Parameter | Value |
+|-----------|-------|
+| Dataset | 9,302 examples (healthcare domain only) |
+| Max Seq Length | 2048 |
+| Effective Batch Size | 32 (1 × 4 grad_accum × 8 GPUs) |
+| Epochs | 5 |
+| Training Time | ~2 hours (8x NVIDIA L4) |
+| Final Loss | 0.2256 |
+| GGUF Export | Q4_K_M — 4.6 GB |
+| Status | **Deployed** — serving via Ollama on port 8080 |
+
+#### v1 (In progress — balanced dataset)
+
+| Parameter | Value |
+|-----------|-------|
+| Dataset | 35,394 examples (healthcare + general + multi-turn + identity) |
+| Max Seq Length | 4096 |
+| Effective Batch Size | 4 (1 × 4 grad_accum × 1 GPU) |
+| Epochs | 3 |
+| Total Steps | 13,275 |
+| Current Progress | Step 3,000 (22.6%), loss 0.205 |
+| Status | **In progress** — to be resumed |
+
+#### Common Training Parameters
 
 | Parameter | Value |
 |-----------|-------|
@@ -305,20 +364,16 @@ python -m nexifuse train-multigpu
 | LoRA Rank / Alpha | 32 / 64 |
 | Target Modules | q, k, v, o, gate, up, down proj |
 | Learning Rate | 2e-4 (cosine decay) |
-| Effective Batch Size | 32 (1 x 4 grad_accum x 8 GPUs) |
-| Epochs | 5 |
-| Training Time | ~2 hours (8x NVIDIA L4) |
-| Final Loss | 0.2256 |
 | Trainable Parameters | 83.9M / 8.1B (1.03%) |
-| GGUF Export | Q4_K_M — 4.6 GB |
 
-### Next Training Run (v1: 25k balanced dataset)
+### Remaining Steps (v1 → Production)
 
-- Increase `max_seq_length` to 4096 (already updated in config)
-- Add general assistant data (7k examples) to prevent catastrophic forgetting
-- Add multi-turn conversations (4.5k examples) for interactive debugging
-- Upgrade teacher model from Qwen 7B to Qwen 32B + DeepSeek-R1 70B
-- Add DPO alignment pass after SFT
+1. Resume v1 training to completion (remaining ~10k steps)
+2. Re-export GGUF Q4_K_M from v1 adapter
+3. Deploy v1 model and benchmark vs MVP (general capability + healthcare correctness)
+4. Generate DPO preference pairs (student failures + DeepSeek-R1 70B chosen)
+5. Run DPO alignment training
+6. Scale toward production (50-80k examples) per [Upgrade Plan](Upgrade_Plan_2026_3_11.md)
 
 ## Model Export & Deployment
 
