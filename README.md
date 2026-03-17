@@ -6,7 +6,7 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Highlights
 
-- **MVP deployed, v1 data generation complete** — following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md), now in clean → format → train cycle
+- **v1 complete, v2 next** — MVP and v1 milestones achieved per [Upgrade Plan](Upgrade_Plan_2026_3_11.md), preparing for v2
 - **22k+ raw examples generated** — 57% healthcare, 34% general assistant, 5% multi-turn, 2.5% scraped code
 - **Dual teacher model stack** — Llama 3 70B (complex reasoning) + Qwen 2.5 Coder 32B (bulk generation), both running locally via Ollama
 - **Multi-GPU distributed training** via Accelerate DDP — 8x NVIDIA L4 cluster
@@ -17,25 +17,26 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Current Status
 
-Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md) to evolve from MVP to production-ready v1.
+Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md). MVP and v1 milestones complete. Preparing for v2.
 
 ### Milestones
 
 | Milestone | Status | Details |
 |-----------|--------|---------|
-| **MVP** (8-12k examples) | COMPLETE | 9.3k healthcare-only dataset. Model deployed via Ollama. Proved pipeline works end-to-end. |
-| **v1** (20-30k examples) | IN PROGRESS | 22.1k raw generated. Data generation complete — clean, format, and train in progress. |
-| **Production** (50-80k examples) | PLANNED | Full vendor coverage, DPO alignment, edge-case hardening. |
+| **MVP** (8-12k examples) | COMPLETE | 9.3k healthcare-only dataset. Proved pipeline works end-to-end. |
+| **v1** (20-30k examples) | COMPLETE | 22.1k raw → 18k cleaned → 17.6k validated → 35.4k formatted. Balanced dataset trained and deployed. |
+| **v2 / Production** (50-80k examples) | NEXT | Full vendor coverage, DPO alignment, extended context, edge-case hardening. |
 
-### v1 Progress (per [Upgrade Plan](Upgrade_Plan_2026_3_11.md))
+### v1 Completion Summary
 
 | Phase | Status | Details |
 |-------|--------|---------|
 | Data Generation | COMPLETE | 22,124 raw examples across all categories |
-| Data Cleaning | IN PROGRESS | Running clean → validate → format pipeline |
-| v1 Training | PENDING | Will train on balanced dataset after formatting |
-| v1 Export | PENDING | Re-export GGUF Q4_K_M after training completes |
-| DPO Alignment | PENDING | Generate preference pairs, then train-dpo |
+| Data Cleaning | COMPLETE | 18,055 examples after dedup + normalization |
+| Validation | COMPLETE | 17,661 passed (97.8% pass rate) |
+| Formatting | COMPLETE | 35,394 training examples (with identity anchors) |
+| v1 Training | COMPLETE | Trained on balanced dataset (multi-GPU DDP) |
+| v1 Export & Deploy | COMPLETE | GGUF Q4_K_M exported, serving via Ollama |
 
 ### Dataset Composition (v1)
 
@@ -341,15 +342,16 @@ python -m nexifuse train-multigpu
 | GGUF Export | Q4_K_M — 4.6 GB |
 | Status | **Deployed** — serving via Ollama on port 8080 |
 
-#### v1 (Pending — balanced dataset)
+#### v1 (Complete — balanced dataset)
 
 | Parameter | Value |
 |-----------|-------|
-| Dataset | ~22k raw → clean → validate → format pipeline in progress |
+| Dataset | 35,394 examples (healthcare + general + multi-turn + identity) |
 | Max Seq Length | 2048 |
 | Effective Batch Size | 32 (1 × 4 grad_accum × 8 GPUs) |
 | Epochs | 3 |
-| Status | **Pending** — data processing in progress |
+| GGUF Export | Q4_K_M — 4.6 GB |
+| Status | **Complete** — trained, exported, and deployed |
 
 #### Common Training Parameters
 
@@ -362,15 +364,15 @@ python -m nexifuse train-multigpu
 | Learning Rate | 2e-4 (cosine decay) |
 | Trainable Parameters | 83.9M / 8.1B (1.03%) |
 
-### Remaining Steps (v1 → Production)
+### Next Steps (v2 — Production)
 
-1. Complete v1 data pipeline (clean → validate → format)
-2. Train v1 on balanced dataset (multi-GPU DDP)
-3. Re-export GGUF Q4_K_M from v1 adapter
-4. Deploy v1 model and benchmark vs MVP (general capability + healthcare correctness)
-5. Generate DPO preference pairs (student failures + DeepSeek-R1 70B chosen)
-6. Run DPO alignment training
-7. Scale toward production (50-80k examples) per [Upgrade Plan](Upgrade_Plan_2026_3_11.md)
+1. Scale dataset to 50-80k examples with full vendor coverage (Epic, Cerner, Athena, MEDITECH)
+2. Generate DPO preference pairs (student failures + DeepSeek-R1 70B chosen)
+3. Run DPO alignment training
+4. Extend context window to 8192+ tokens
+5. Add IHE profile and DICOM integration examples
+6. Build automated evaluation suite for regression testing
+7. Benchmark v2 vs v1 across healthcare + general capability test suite
 
 ## Model Export & Deployment
 
