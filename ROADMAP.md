@@ -86,8 +86,8 @@ Build a domain-specific "Robust Expert" AI model for healthcare data interoperab
 | Phase 4: Model Training (MVP) | **COMPLETE** | 100% — 8B model trained on 9.3k, loss 0.2256, deployed |
 | Phase 5: Model Export (MVP) | **COMPLETE** | 100% — GGUF Q4_K_M (4.6 GB) |
 | Phase 6: Deployment | **COMPLETE** | 100% — Ollama + FastAPI + Integrator |
-| Phase 7: v1 Training & Improvement | **IN PROGRESS** | 60% — v1 data ready, training at step 3,000/13,275 (22.6%) |
-| Phase 8: MedGemma v2 Upgrade | **PLANNED** | 0% — after v1 completion |
+| Phase 7: v1 Training & Improvement | **COMPLETE** | 100% — v1 trained on 35.4k examples, deployed via Ollama |
+| Phase 8: v2 — Production-Ready | **NEXT** | 0% — 50-80k examples, DPO alignment, extended context |
 
 ---
 
@@ -256,23 +256,20 @@ Build a domain-specific "Robust Expert" AI model for healthcare data interoperab
 | Final loss | 0.2256 |
 | max_seq_length | 2048 |
 
-### v1 Training (IN PROGRESS)
+### v1 Training (COMPLETE)
 
 | Parameter | Value |
 |-----------|-------|
 | Dataset | 35,394 examples (balanced: healthcare + general + multi-turn + identity) |
-| Max Seq Length | 4096 |
-| Effective Batch Size | 4 (1 × 4 grad_accum × 1 GPU) |
+| Max Seq Length | 2048 |
+| Effective Batch Size | 32 (1 × 4 grad_accum × 8 GPUs) |
 | Epochs | 3 |
-| Total Steps | 13,275 |
-| Current Progress | Step 3,000/13,275 (22.6%), loss 0.205 |
+| Status | **Complete** — trained, exported (Q4_K_M), deployed via Ollama |
 
-- [x] Increase `max_seq_length` to 4096
 - [x] Assemble balanced v1 dataset (22k raw → 18k cleaned → 35k formatted)
-- [ ] Complete v1 SFT training (remaining ~10k steps)
-- [ ] Re-export GGUF Q4_K_M from v1 adapter
-- [ ] Evaluate on held-out test set: general capability + domain correctness
-- [ ] Run DPO alignment pass with preference pairs
+- [x] Complete v1 SFT training on balanced dataset
+- [x] Re-export GGUF Q4_K_M from v1 adapter
+- [x] Deploy v1 model via Ollama
 
 ---
 
@@ -312,9 +309,9 @@ Build a domain-specific "Robust Expert" AI model for healthcare data interoperab
 
 ---
 
-## Phase 7: v1 Training & Iterative Improvement — IN PROGRESS
+## Phase 7: v1 Training & Iterative Improvement — COMPLETE
 
-**Goal:** Complete v1 training on balanced dataset, align with DPO, harden for production.
+**Goal:** Train v1 on balanced dataset, deploy as Robust Expert.
 
 Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md).
 
@@ -332,27 +329,25 @@ Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md).
 - [x] Scale healthcare domain to 12,961 examples
 - [x] Run full clean → validate → format pipeline on 22k raw examples
 
-#### Phase 7.2: v1 Training — IN PROGRESS
-- [x] Increase max_seq_length to 4096
+#### Phase 7.2: v1 Training — COMPLETE
 - [x] Assemble balanced v1 dataset (35,394 formatted examples)
-- [ ] **Complete v1 SFT training** — currently at step 3,000/13,275 (22.6%), loss 0.205
-- [ ] Re-export GGUF Q4_K_M from v1 adapter
-- [ ] Deploy v1 model and benchmark vs MVP
-- [ ] Begin generating DPO pairs (student failures + Llama 3 70B chosen)
+- [x] Complete v1 SFT training (multi-GPU DDP, 8x L4)
+- [x] Export GGUF Q4_K_M from v1 adapter (4.6 GB)
+- [x] Deploy v1 model via Ollama
+- [x] Benchmark v1: B+ overall grade (A- healthcare, A math/coding, A identity)
 
-#### Phase 7.3: Harden for Production — PENDING
+#### Phase 7.3: Harden for Production — DEFERRED TO v2
 - [ ] Train DPO alignment pass (1,500 preference pairs)
 - [ ] Add vendor-specific API examples (Epic, Cerner, Athena — 200+ per vendor)
 - [ ] Add edge case examples (malformed HL7, FHIR errors, timeouts)
 - [ ] Expand multi-turn conversations to 4,500
 - [ ] Expand identity anchors to 1,000
+- [ ] Extend context window to 8192+ tokens
 - [ ] Final evaluation against held-out test suite
-- [ ] A/B test MVP vs. v1 model on real developer queries
-- [ ] **Deploy production model**
 
 ---
 
-## Phase 8: v2 — MedGemma Base Model Upgrade — PLANNED
+## Phase 8: v2 — Production-Ready / MedGemma Upgrade — NEXT
 
 **Goal:** Replace the DeepSeek-R1-Distill-Llama-8B base with Google's MedGemma 27B for significantly stronger clinical and FHIR capabilities out-of-the-box, reducing training data requirements for healthcare tasks.
 
