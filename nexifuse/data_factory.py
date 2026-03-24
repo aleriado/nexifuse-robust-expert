@@ -21,6 +21,7 @@ import requests
 
 from nexifuse.config import PipelineConfig
 from nexifuse.models import ConversationExample, ConversationTurn, TrainingExample
+from nexifuse.validator import validate_example
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,59 @@ _GENERAL_VIBE_TEMPLATES: dict[str, list[str]] = {
         "Explain eventual consistency vs strong consistency",
     ],
 }
+
+# ---------------------------------------------------------------------------
+# Conceptual/explanation vibe templates — for non-code knowledge
+# ---------------------------------------------------------------------------
+_CONCEPTUAL_VIBE_TEMPLATES: dict[str, list[str]] = {
+    "hl7v2_vs_fhir": [
+        "What are the key differences between HL7 v2 and FHIR R4?",
+        "When should a hospital migrate from HL7 v2 to FHIR?",
+        "Explain the HL7 v2 message structure vs FHIR resource model",
+        "How do HL7 v2 segments map to FHIR resources?",
+        "What challenges arise when bridging HL7 v2 and FHIR systems?",
+    ],
+    "mirth_architecture": [
+        "Explain the Mirth Connect channel processing pipeline",
+        "How do Mirth source and destination connectors differ?",
+        "What are Mirth code templates and when should they be used?",
+        "Describe the Mirth message lifecycle from source to destination",
+        "How does Mirth handle message queuing and retry logic?",
+    ],
+    "ihe_profiles": [
+        "Explain the IHE PIX/PDQ profile and its use cases",
+        "What is the IHE XDS.b profile and how does it support document sharing?",
+        "Describe the IHE ATNA profile for audit logging",
+        "How does IHE MHD relate to FHIR document sharing?",
+        "What role does IHE CT (Consistent Time) play in interoperability?",
+    ],
+    "ehr_integration_patterns": [
+        "Describe common patterns for real-time EHR integration",
+        "What is the difference between point-to-point and hub-and-spoke integration?",
+        "Explain the role of an integration engine in a hospital IT ecosystem",
+        "How do you handle data reconciliation between EHR systems?",
+        "What are best practices for EHR API rate limiting and throttling?",
+    ],
+    "security_compliance": [
+        "What are the HIPAA requirements for healthcare data integration?",
+        "How should PHI be handled in HL7 message logging?",
+        "Explain TLS/mTLS requirements for healthcare API connections",
+        "What audit logging is required for HIPAA compliance in integration engines?",
+        "How do you implement data masking for PHI in development environments?",
+    ],
+    "fhir_resource_design": [
+        "How do you design custom FHIR profiles for a specific use case?",
+        "Explain FHIR extensions and when to create them",
+        "What is the difference between FHIR contained resources and references?",
+        "How do you model complex clinical workflows in FHIR?",
+        "What are FHIR Implementation Guides and why are they important?",
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# Raw HL7 message types for generation
+# ---------------------------------------------------------------------------
+_RAW_HL7_TYPES: list[str] = ["ADT", "ORU", "ORM", "SIU", "VXU"]
 
 # ---------------------------------------------------------------------------
 # Multi-turn conversation scenario outlines
@@ -358,6 +412,133 @@ def _call_teacher(
             else:
                 logger.warning("Teacher call failed after %d attempts: %s", max_retries + 1, exc)
     return ""
+
+
+def _select_model(config: PipelineConfig, complex_task: bool = True) -> str:
+    """Pick the right teacher model based on task complexity.
+
+    Uses config.data_factory.model_name (primary teacher) for complex tasks
+    like multi-turn conversations, CoT reasoning, and rejection sampling.
+    Uses config.data_factory.bulk_model for simpler tasks like general Q&A
+    and straightforward single-turn generation.
+    """
+    tc = config.data_factory
+    if complex_task:
+        return tc.model_name
+    bulk = getattr(tc, "bulk_model", None)
+    return bulk if bulk else tc.model_name
+
+
+def _score_example(example: TrainingExample, config: PipelineConfig | None = None) -> float:
+    """Score a training example using the validator. Returns 0.0-1.0."""
+    result = validate_example(example, config)
+    if not result.passed:
+        return 0.0
+    # Base score for passing validation
+    score = 0.5
+    output = example.output.strip()
+    # Reward longer, more detailed outputs (up to a point)
+    length = len(output)
+    if length > 100:
+        score += 0.15
+    if length > 500:
+        score += 0.1
+    # Reward code blocks / structured content
+    if "```" in output or "function " in output or "def " in output:
+        score += 0.1
+    # Reward comments / documentation
+    if "//" in output or "#" in output or "/*" in output:
+        score += 0.1
+    # Penalize very short outputs
+    if length < 50:
+        score -= 0.2
+    return max(0.0, min(1.0, score))
+
+
+def _generate_with_rejection(
+    prompt: str,
+    domain: str,
+    config: PipelineConfig,
+    endpoint: str,
+    model: str,
+    simpo_path: Path | None = None,
+    simpo_lock: threading.Lock | None = None,
+    temperature: float = 0.7,
+    timeout: int = 300,
+    max_retries: int = 2,
+) -> str:
+    """Generate N completions via rejection sampling, return the best one.
+
+    Also saves a SimPO preference pair (best vs worst) if simpo_path is set.
+
+    Args:
+        prompt: The generation prompt.
+        domain: Domain for building TrainingExample for scoring.
+        config: Pipeline config (used for rejection_samples count and validation).
+        endpoint: Teacher model endpoint.
+        model: Model name to use.
+        simpo_path: Path to write SimPO pairs (optional).
+        simpo_lock: Lock for thread-safe writes to simpo_path (optional).
+        temperature: Sampling temperature.
+        timeout: Request timeout.
+        max_retries: Max retries per call.
+
+    Returns:
+        The best completion string, or empty string if all fail.
+    """
+    n_samples = getattr(config.data_factory, "rejection_samples", 5)
+    if n_samples <= 1:
+        return _call_teacher(prompt, endpoint, model, temperature=temperature,
+                             timeout=timeout, max_retries=max_retries)
+
+    completions: list[tuple[str, float]] = []
+    for i in range(n_samples):
+        # Vary temperature slightly for diversity
+        temp_i = temperature + (i * 0.05)
+        response = _call_teacher(prompt, endpoint, model, temperature=temp_i,
+                                 timeout=timeout, max_retries=max_retries)
+        if not response:
+            continue
+        # Score using validator
+        example = TrainingExample(
+            instruction=prompt, input="", output=response,
+            domain=domain, source_standard=domain, version="rejection-v1",
+        )
+        score = _score_example(example, config)
+        completions.append((response, score))
+
+    if not completions:
+        return ""
+
+    # Sort by score descending
+    completions.sort(key=lambda x: x[1], reverse=True)
+    best_response, best_score = completions[0]
+    worst_response, worst_score = completions[-1]
+
+    logger.debug(
+        "Rejection sampling: %d/%d valid, best=%.2f, worst=%.2f",
+        len(completions), n_samples, best_score, worst_score,
+    )
+
+    # Save SimPO preference pair if we have distinct best/worst
+    if (
+        simpo_path is not None
+        and simpo_lock is not None
+        and len(completions) >= 2
+        and best_score > worst_score
+    ):
+        pair = {
+            "prompt": prompt,
+            "chosen": best_response,
+            "rejected": worst_response,
+        }
+        with simpo_lock:
+            simpo_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(simpo_path, "a", encoding="utf-8") as sf:
+                sf.write(json.dumps(pair, ensure_ascii=False) + "\n")
+                sf.flush()
+
+    return best_response
 
 
 def _generate_instruction(
@@ -899,6 +1080,300 @@ def generate_conversations(
 
     logger.info(
         "Conversation factory complete: %d total in %s (new: %d, failed: %d)",
+        len(examples), output_path, new_count, failed,
+    )
+    return examples
+
+
+# ---------------------------------------------------------------------------
+# Conceptual/explanation example generation
+# ---------------------------------------------------------------------------
+
+def generate_conceptual_examples(
+    config: PipelineConfig,
+    output_path: str | Path = "data/raw/conceptual.jsonl",
+    num_per_category: int = 350,
+    num_workers: int = 8,
+    model_override: str | None = None,
+) -> list[TrainingExample]:
+    """Generate conceptual/explanation training examples (not code).
+
+    Covers categories like hl7v2_vs_fhir, mirth_architecture, ihe_profiles, etc.
+    These examples teach the model domain knowledge and reasoning rather than
+    code generation.
+
+    Supports resume: if output_path already exists, counts existing examples
+    per category and generates only the remaining.
+
+    Args:
+        config: Pipeline configuration.
+        output_path: Where to write the output JSONL.
+        num_per_category: Number of examples to generate per category.
+        num_workers: Number of parallel generation workers.
+        model_override: Optional model name override.
+
+    Returns:
+        List of TrainingExample objects (existing + new).
+    """
+    tc = config.data_factory
+    model_name = model_override or _select_model(config, complex_task=True)
+    timeout = getattr(tc, "timeout_seconds", 300)
+    max_retries = getattr(tc, "max_retries", 2)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    simpo_path = Path("data/simpo/pairs.jsonl")
+
+    logger.info("Using model: %s for conceptual data generation", model_name)
+
+    # Resume support: count existing examples per category
+    existing_counts: dict[str, int] = {}
+    examples: list[TrainingExample] = []
+    if output_path.exists() and output_path.stat().st_size > 0:
+        with open(output_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    cat = row.get("domain", "unknown")
+                    existing_counts[cat] = existing_counts.get(cat, 0) + 1
+                    examples.append(TrainingExample.from_dict(row))
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Skipping malformed line %d in %s", line_num, output_path)
+        logger.info("Resume: found %d existing conceptual examples %s",
+                     len(examples), dict(existing_counts))
+
+    failed = 0
+    new_count = 0
+    write_lock = threading.Lock()
+    simpo_lock = threading.Lock()
+
+    def _generate_one(category: str) -> TrainingExample | None:
+        """Generate a single conceptual example (runs in thread pool)."""
+        templates = _CONCEPTUAL_VIBE_TEMPLATES.get(
+            category, list(_CONCEPTUAL_VIBE_TEMPLATES.values())[0]
+        )
+        seed = random.choice(templates)
+
+        # Generate a new instruction inspired by the seed
+        instr_prompt = (
+            f"You are generating training data for a healthcare integration AI.\n"
+            f"Category: {category}\n\n"
+            f"Inspired by this example question: \"{seed}\"\n\n"
+            f"Generate a NEW, different conceptual question about {category.replace('_', ' ')}. "
+            f"The question should require an explanatory answer (not code). "
+            f"Be specific and include realistic healthcare IT details. "
+            f"Return ONLY the question, nothing else."
+        )
+        instruction = _call_teacher(
+            instr_prompt, tc.endpoint, model_name,
+            timeout=timeout, max_retries=max_retries,
+        )
+        if not instruction:
+            instruction = seed
+
+        # Generate the conceptual response using rejection sampling
+        resp_prompt = (
+            f"You are a healthcare integration expert. Answer the following question "
+            f"with a clear, detailed explanation. Do NOT generate code — focus on "
+            f"concepts, architecture, standards, and best practices.\n\n"
+            f"Question: {instruction}\n\n"
+            f"Provide a thorough, well-structured explanation."
+        )
+        response = _generate_with_rejection(
+            resp_prompt, category, config,
+            tc.endpoint, model_name,
+            simpo_path=simpo_path, simpo_lock=simpo_lock,
+            temperature=0.5,
+            timeout=timeout, max_retries=max_retries,
+        )
+        if not response:
+            return None
+        return TrainingExample(
+            instruction=instruction, input="", output=response,
+            domain=category, source_standard=category,
+            version="conceptual-v1",
+        )
+
+    with open(output_path, "a", encoding="utf-8") as f:
+        for category in _CONCEPTUAL_VIBE_TEMPLATES:
+            already_done = existing_counts.get(category, 0)
+            remaining = num_per_category - already_done
+
+            if remaining <= 0:
+                logger.info("Category '%s': already complete (%d/%d), skipping",
+                            category, already_done, num_per_category)
+                continue
+
+            logger.info("Generating %d conceptual examples for '%s' with %d workers (already have %d)",
+                        remaining, category, num_workers, already_done)
+
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                futures = {
+                    pool.submit(_generate_one, category): i
+                    for i in range(remaining)
+                }
+                done_count = 0
+                for future in as_completed(futures):
+                    done_count += 1
+                    example = future.result()
+                    if example is None:
+                        failed += 1
+                        continue
+
+                    with write_lock:
+                        examples.append(example)
+                        new_count += 1
+                        f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+                        f.flush()
+
+                    if done_count % 25 == 0:
+                        logger.info("  [%s] %d/%d done", category, done_count, remaining)
+
+    logger.info(
+        "Conceptual factory complete: %d total in %s (new: %d, failed: %d)",
+        len(examples), output_path, new_count, failed,
+    )
+    return examples
+
+
+# ---------------------------------------------------------------------------
+# Raw HL7 message generation
+# ---------------------------------------------------------------------------
+
+def generate_raw_hl7_examples(
+    config: PipelineConfig,
+    output_path: str | Path = "data/raw/raw_hl7.jsonl",
+    num_examples: int = 500,
+    num_workers: int = 8,
+    model_override: str | None = None,
+) -> list[TrainingExample]:
+    """Generate raw pipe-delimited HL7 message examples.
+
+    Generates realistic HL7 v2 messages (ADT, ORU, ORM, SIU, VXU) with
+    proper segment structure, pipe delimiters, and realistic field values.
+
+    Supports resume: if output_path already exists, counts existing examples
+    per message type and generates only the remaining.
+
+    Args:
+        config: Pipeline configuration.
+        output_path: Where to write the output JSONL.
+        num_examples: Total number of examples to generate (distributed across types).
+        num_workers: Number of parallel generation workers.
+        model_override: Optional model name override.
+
+    Returns:
+        List of TrainingExample objects (existing + new).
+    """
+    tc = config.data_factory
+    model_name = model_override or _select_model(config, complex_task=False)
+    timeout = getattr(tc, "timeout_seconds", 300)
+    max_retries = getattr(tc, "max_retries", 2)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    num_per_type = max(1, num_examples // len(_RAW_HL7_TYPES))
+
+    logger.info("Using model: %s for raw HL7 generation", model_name)
+
+    # Resume support: count existing examples per HL7 type
+    existing_counts: dict[str, int] = {}
+    examples: list[TrainingExample] = []
+    if output_path.exists() and output_path.stat().st_size > 0:
+        with open(output_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hl7_type = row.get("source_standard", "unknown")
+                    existing_counts[hl7_type] = existing_counts.get(hl7_type, 0) + 1
+                    examples.append(TrainingExample.from_dict(row))
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Skipping malformed line %d in %s", line_num, output_path)
+        logger.info("Resume: found %d existing raw HL7 examples %s",
+                     len(examples), dict(existing_counts))
+
+    failed = 0
+    new_count = 0
+    write_lock = threading.Lock()
+
+    def _generate_one(hl7_type: str) -> TrainingExample | None:
+        """Generate a single raw HL7 message example (runs in thread pool)."""
+        # Instruction: ask for a raw HL7 message
+        instruction = (
+            f"Generate a realistic, complete HL7 v2.5.1 {hl7_type} message "
+            f"with proper pipe-delimited segments. Include realistic but "
+            f"fictional patient data (no real PHI)."
+        )
+
+        prompt = (
+            f"You are an HL7 v2 message expert. Generate a complete, valid, "
+            f"pipe-delimited HL7 v2.5.1 {hl7_type} message.\n\n"
+            f"Requirements:\n"
+            f"- Use proper HL7 encoding characters: |^~\\&\n"
+            f"- Include MSH segment with correct message type\n"
+            f"- Include all standard segments for {hl7_type} messages\n"
+            f"- Use realistic but fictional patient data (no real PHI)\n"
+            f"- Use realistic facility names and OIDs\n"
+            f"- Include proper timestamps in HL7 format (YYYYMMDDHHMMSS)\n\n"
+            f"Return ONLY the raw HL7 message with segments separated by newlines. "
+            f"No explanation, no markdown, just the message."
+        )
+
+        response = _call_teacher(
+            prompt, tc.endpoint, model_name,
+            temperature=0.6, timeout=timeout, max_retries=max_retries,
+        )
+        if not response:
+            return None
+
+        return TrainingExample(
+            instruction=instruction, input="", output=response,
+            domain="hl7v2", source_standard=hl7_type,
+            version="raw-hl7-v1",
+        )
+
+    with open(output_path, "a", encoding="utf-8") as f:
+        for hl7_type in _RAW_HL7_TYPES:
+            already_done = existing_counts.get(hl7_type, 0)
+            remaining = num_per_type - already_done
+
+            if remaining <= 0:
+                logger.info("HL7 type '%s': already complete (%d/%d), skipping",
+                            hl7_type, already_done, num_per_type)
+                continue
+
+            logger.info("Generating %d raw HL7 %s messages with %d workers (already have %d)",
+                        remaining, hl7_type, num_workers, already_done)
+
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                futures = {
+                    pool.submit(_generate_one, hl7_type): i
+                    for i in range(remaining)
+                }
+                done_count = 0
+                for future in as_completed(futures):
+                    done_count += 1
+                    example = future.result()
+                    if example is None:
+                        failed += 1
+                        continue
+
+                    with write_lock:
+                        examples.append(example)
+                        new_count += 1
+                        f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+                        f.flush()
+
+                    if done_count % 25 == 0:
+                        logger.info("  [%s] %d/%d done", hl7_type, done_count, remaining)
+
+    logger.info(
+        "Raw HL7 factory complete: %d total in %s (new: %d, failed: %d)",
         len(examples), output_path, new_count, failed,
     )
     return examples

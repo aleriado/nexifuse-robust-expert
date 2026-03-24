@@ -6,10 +6,12 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Highlights
 
-- **v1 complete, v2 next** — MVP and v1 milestones achieved per [Upgrade Plan](Upgrade_Plan_2026_3_11.md), preparing for v2
-- **22k+ raw examples generated** — 57% healthcare, 34% general assistant, 5% multi-turn, 2.5% scraped code
-- **Dual teacher model stack** — Llama 3 70B (complex reasoning) + Qwen 2.5 Coder 32B (bulk generation), both running locally via Ollama
-- **Multi-GPU distributed training** via Accelerate DDP — 8x NVIDIA L4 cluster
+- **v1 complete, v2 next** — MVP and v1 milestones achieved, preparing for v2 (MedGemma 27B upgrade)
+- **21k+ raw examples generated** — 59% healthcare, 35% general assistant, 5% multi-turn, 2.5% scraped code
+- **8-GPU parallel data generation** — 8 Ollama instances (one per GPU) for maximum throughput
+- **Dual teacher model strategy** — Llama 3 70B for healthcare quality, Llama 3 8B for general/casual data
+- **8-GPU distributed training** via torchrun DDP — 8x NVIDIA L4 (GB10 Blackwell), completed in 2h 20m
+- **Final training loss: 0.175** — strong domain alignment with retained general capabilities
 - **97.8% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
 - **End-to-end CLI pipeline** — from data ingestion to model serving in one tool
 - **OpenAI-compatible API** — drop-in replacement for any OpenAI client
@@ -17,44 +19,48 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Current Status
 
-Following the [Upgrade Plan](Upgrade_Plan_2026_3_11.md). MVP and v1 milestones complete. Preparing for v2.
+MVP and v1 milestones complete. Preparing for v2 (MedGemma 27B upgrade — see [ROADMAP.md](ROADMAP.md)).
 
 ### Milestones
 
 | Milestone | Status | Details |
 |-----------|--------|---------|
 | **MVP** (8-12k examples) | COMPLETE | 9.3k healthcare-only dataset. Proved pipeline works end-to-end. |
-| **v1** (20-30k examples) | COMPLETE | 22.1k raw → 18k cleaned → 17.6k validated → 35.4k formatted. Balanced dataset trained and deployed. |
-| **v2 / Production** (50-80k examples) | NEXT | Full vendor coverage, DPO alignment, extended context, edge-case hardening. |
+| **v1** (20-30k examples) | COMPLETE | 21.2k raw → cleaned → validated → trained with 8-GPU DDP in 2h 20m. |
+| **v2 / MedGemma** (50-80k examples) | NEXT | MedGemma 27B base, full vendor coverage, DPO alignment, extended context. |
 
 ### v1 Completion Summary
 
 | Phase | Status | Details |
 |-------|--------|---------|
-| Data Generation | COMPLETE | 22,124 raw examples across all categories |
-| Data Cleaning | COMPLETE | 18,055 examples after dedup + normalization |
-| Validation | COMPLETE | 17,661 passed (97.8% pass rate) |
-| Formatting | COMPLETE | 35,394 training examples (with identity anchors) |
-| v1 Training | COMPLETE | Trained on balanced dataset (multi-GPU DDP) |
-| v1 Export & Deploy | COMPLETE | GGUF Q4_K_M exported, serving via Ollama |
+| Data Generation | COMPLETE | 21,216 raw examples — 8 GPUs parallel (8 Ollama instances) |
+| Data Cleaning | COMPLETE | Dedup + normalization + identity filtering |
+| Validation | COMPLETE | 97.8% pass rate (JavaScript, XML, HL7 v2, FHIR R4, security) |
+| Formatting | COMPLETE | Llama 3 chat template applied |
+| v1 Training | COMPLETE | 8-GPU DDP (torchrun), 3 epochs, 2h 20m, final loss 0.175 |
+| v1 Export & Deploy | COMPLETE | Merged LoRA → F16 GGUF → Q4_K_M (4.6 GB), registered with Ollama |
 
 ### Dataset Composition (v1)
 
 | Source | File | Count | % of Raw |
 |--------|------|-------|----------|
-| Healthcare domain (synthetic) | `synthetic_run1.jsonl` | 12,600 | 57% |
-| General assistant (5 categories) | `general.jsonl` | 7,500 | 34% |
-| Multi-turn conversations (6 scenarios) | `conversations.jsonl` | 1,116 | 5% |
+| Healthcare domain (HL7v2, FHIR R4, Mirth, EHR API, IHE, DICOM) | `synthetic_run1.jsonl` | 12,600 | 59% |
+| General assistant (math, coding, reasoning, casual, knowledge) | `general.jsonl` | 7,500 | 35% |
+| Multi-turn conversations | `conversations.jsonl` | 1,116 | 5% |
 | GitHub scraped code | `scraped.jsonl` | 547 | 2.5% |
-| Domain synthetic (early run) | `synthetic.jsonl` | 361 | 1.5% |
-| **Total raw** | | **22,124** | |
+| **Total raw** | | **21,763** | |
 
-| Processing Stage | File | Count |
-|-----------------|------|-------|
-| After cleaning | `cleaned.jsonl` | 18,055 |
-| After validation (passed) | `passed.jsonl` | 17,661 |
-| After validation (failed) | `failed.jsonl` | 394 |
-| After formatting (with identity + conversations) | `train.jsonl` | 35,394 |
+### Training Run (v1 Final)
+
+| Metric | Value |
+|--------|-------|
+| Hardware | 8× NVIDIA L4 (GB10 Blackwell, 22 GB each) |
+| Training time | 2 hours 20 minutes |
+| Total steps | 1,926 (3 epochs) |
+| Batch size (effective) | 32 (1 × 4 × 8 GPUs) |
+| Starting loss | 0.68 |
+| Final loss | **0.175** |
+| Model size (GGUF Q4_K_M) | 4.6 GB |
 
 ## Architecture
 

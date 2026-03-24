@@ -37,7 +37,8 @@ class TrainingConfig:
 class TeacherConfig:
     """Teacher model configuration for synthetic data generation."""
 
-    model_name: str = "deepseek-r1:70b"
+    model_name: str = "deepseek-v3.1"
+    bulk_model: str = "qwen3-coder:30b-a3b"
     endpoint: str = "http://localhost:11434/api/generate"
     context_docs_dir: str = "./docs"
     domains: list[str] = field(
@@ -46,8 +47,34 @@ class TeacherConfig:
         ]
     )
     include_cot: bool = True
-    timeout_seconds: int = 300
-    max_retries: int = 2
+    timeout_seconds: int = 600
+    max_retries: int = 3
+    rejection_samples: int = 5
+
+
+@dataclass
+class GRPOConfig:
+    """GRPO (Group Relative Policy Optimization) configuration."""
+
+    num_generations: int = 5
+    max_steps: int = 500
+    learning_rate: float = 5e-5
+    batch_size: int = 1
+    gradient_accumulation: int = 4
+    max_completion_length: int = 2048
+    beta: float = 0.1
+
+
+@dataclass
+class SimPOConfig:
+    """SimPO (Simple Preference Optimization) configuration."""
+
+    beta: float = 2.0
+    gamma: float = 0.5
+    learning_rate: float = 5e-5
+    num_epochs: int = 1
+    batch_size: int = 1
+    gradient_accumulation: int = 4
 
 
 @dataclass
@@ -100,6 +127,8 @@ class PipelineConfig:
     scraper: ScraperConfig = field(default_factory=ScraperConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
+    grpo: GRPOConfig = field(default_factory=GRPOConfig)
+    simpo: SimPOConfig = field(default_factory=SimPOConfig)
 
 
 # Required top-level sections and their required fields
@@ -194,12 +223,24 @@ class ConfigManager:
         scraper_data = raw.get("scraper", {})
         validation_data = raw.get("validation", {})
         inference_data = raw.get("inference", {})
+        grpo_data = raw.get("grpo", {})
+        simpo_data = raw.get("simpo", {})
 
         # Coerce numeric fields that YAML may parse as strings (e.g., 2e-4)
         if "learning_rate" in training_data:
             training_data["learning_rate"] = float(training_data["learning_rate"])
         if "port" in inference_data:
             inference_data["port"] = int(inference_data["port"])
+        if "learning_rate" in grpo_data:
+            grpo_data["learning_rate"] = float(grpo_data["learning_rate"])
+        if "learning_rate" in simpo_data:
+            simpo_data["learning_rate"] = float(simpo_data["learning_rate"])
+        if "beta" in grpo_data:
+            grpo_data["beta"] = float(grpo_data["beta"])
+        if "beta" in simpo_data:
+            simpo_data["beta"] = float(simpo_data["beta"])
+        if "gamma" in simpo_data:
+            simpo_data["gamma"] = float(simpo_data["gamma"])
 
         return PipelineConfig(
             training=TrainingConfig(**{
@@ -221,5 +262,13 @@ class ConfigManager:
             inference=InferenceConfig(**{
                 k: v for k, v in inference_data.items()
                 if k in InferenceConfig.__dataclass_fields__
+            }),
+            grpo=GRPOConfig(**{
+                k: v for k, v in grpo_data.items()
+                if k in GRPOConfig.__dataclass_fields__
+            }),
+            simpo=SimPOConfig(**{
+                k: v for k, v in simpo_data.items()
+                if k in SimPOConfig.__dataclass_fields__
             }),
         )

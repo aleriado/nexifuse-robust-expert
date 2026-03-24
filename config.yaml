@@ -1,7 +1,7 @@
 training:
-  base_model: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-  lora_rank: 32
-  lora_alpha: 64
+  base_model: "unsloth/DeepSeek-R1-Distill-Llama-8B"
+  lora_rank: 64
+  lora_alpha: 128
   lora_target_modules:
     - q_proj
     - k_proj
@@ -12,17 +12,39 @@ training:
     - down_proj
   batch_size: 1
   gradient_accumulation: 4
-  learning_rate: 0.0002
+  learning_rate: 0.0001
   lr_scheduler: "cosine"
-  warmup_steps: 10
-  num_epochs: 3
+  warmup_steps: 50
+  num_epochs: 2
   max_seq_length: 2048
   quantization: "nf4"
   output_dir: "outputs"
   adapter_output_dir: "nexifuse_model_adapter"
 
+# GRPO: Group Relative Policy Optimization (verifiable rewards)
+grpo:
+  num_generations: 5
+  max_steps: 500
+  learning_rate: 0.00005
+  batch_size: 1
+  gradient_accumulation: 4
+  max_completion_length: 2048
+  beta: 0.1
+
+# SimPO: Simple Preference Optimization
+simpo:
+  beta: 2.0
+  gamma: 0.5
+  learning_rate: 0.00005
+  num_epochs: 1
+  batch_size: 1
+  gradient_accumulation: 4
+
 data_factory:
-  model_name: "llama3:70b"
+  # Primary teacher (using 8b for speed during bulk generation)
+  model_name: "llama3:8b"
+  # Bulk teacher (general data, simple healthcare)
+  bulk_model: "llama3:8b"
   endpoint: "http://localhost:11434/api/generate"
   context_docs_dir: "./docs"
   domains:
@@ -32,17 +54,19 @@ data_factory:
     - ehr_api
     - ihe
     - dicom
-  include_cot: false
+  include_cot: true
   timeout_seconds: 600
   max_retries: 3
-  # General-purpose data generation settings (used by CLI args, not TeacherConfig fields)
+  # Rejection sampling: disabled for speed (1 = no rejection)
+  rejection_samples: 1
+  # General-purpose data generation settings
   general_categories:
     - math
     - general_knowledge
     - casual
     - general_coding
     - reasoning
-  num_per_general_category: 1500
+  num_per_general_category: 2500
   # Multi-turn conversation settings
   conversation_scenarios:
     - debugging
@@ -51,7 +75,17 @@ data_factory:
     - code_review
     - migration
     - walkthrough
-  num_per_scenario_domain: 70
+    - architecture
+  num_per_scenario_domain: 100
+  # New v2 categories
+  conceptual_categories:
+    - hl7v2_vs_fhir
+    - mirth_architecture
+    - ihe_profiles
+    - ehr_integration_patterns
+    - security_compliance
+    - fhir_resource_design
+  num_per_conceptual_category: 350
 
 scraper:
   repos:
