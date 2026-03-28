@@ -19,6 +19,13 @@ __pycache__/
 .hypothesis/
 .pytest_cache/
 
+# Large data files (regenerable via pipeline)
+data/raw/*.jsonl
+data/cleaned/
+data/validated/
+data/formatted/
+data/dpo/
+
 # Kiro
 .kiro/
 nexifuse_model_adapter/adapter_model.safetensors

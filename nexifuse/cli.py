@@ -4,21 +4,28 @@ Usage:
     python -m nexifuse.cli <command> [options]
 
 Commands:
-    ingest      Ingest documentation from docs/ directory
-    scrape      Scrape GitHub repos for training data
-    generate    Generate synthetic training data via teacher model
-    clean       Clean and deduplicate raw training data
-    validate    Validate training examples
-    dpo         Generate DPO preference pairs
-    format      Format validated data into chat templates
-    train       Run SFT fine-tuning
-    train-dpo   Run DPO alignment (after SFT)
-    merge       Merge LoRA adapter into base model
-    convert     Convert merged model to GGUF
-    quantize    Quantize GGUF model
-    modelfile   Generate Ollama Modelfile
-    serve       Start inference server
-    pipeline    Run full pipeline (ingest → scrape → generate → clean → validate → format)
+    ingest                Ingest documentation from docs/ directory
+    scrape                Scrape GitHub repos for training data
+    generate              Generate synthetic training data via teacher model
+    generate-general      Generate general assistant training data
+    generate-conversations Generate multi-turn conversations
+    generate-conceptual   Generate conceptual/explanation examples (v2)
+    generate-raw-hl7      Generate raw HL7 message examples (v2)
+    clean                 Clean and deduplicate raw training data
+    validate              Validate training examples
+    dpo                   Generate DPO preference pairs
+    format                Format validated data into chat templates
+    train                 Run SFT fine-tuning
+    train-multigpu        Run SFT on all GPUs via Accelerate DDP
+    train-grpo            Run GRPO with verifiable rewards (v2)
+    train-simpo           Run SimPO preference alignment (v2)
+    train-dpo             Run DPO alignment (after SFT)
+    merge                 Merge LoRA adapter into base model
+    convert               Convert merged model to GGUF
+    modelfile             Generate Ollama Modelfile
+    serve                 Start inference server
+    pipeline              Run full data pipeline
+    pipeline-v2           Run v2 pipeline (generate → clean → validate → format → SFT → GRPO → SimPO)
 """
 
 from __future__ import annotations
@@ -76,6 +83,7 @@ def cmd_generate_general(args):
     examples = generate_general_examples(
         config, output_path=args.output, num_per_category=args.num_per_category,
         num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
     )
     print(f"Generated {len(examples)} general examples")
 
@@ -87,6 +95,7 @@ def cmd_generate_conversations(args):
         config, output_path=args.output,
         num_per_scenario_domain=args.num_per_scenario_domain,
         num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
     )
     print(f"Generated {len(examples)} conversation examples")
 
@@ -163,6 +172,52 @@ def cmd_train_multigpu(args):
     rc = subprocess.run(cmd, cwd=os.getcwd())
     if rc.returncode != 0:
         sys.exit(rc.returncode)
+
+
+def cmd_generate_conceptual(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.data_factory import generate_conceptual_examples
+    examples = generate_conceptual_examples(
+        config, output_path=args.output,
+        num_per_category=args.num_per_category,
+        num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
+    )
+    print(f"Generated {len(examples)} conceptual examples")
+
+
+def cmd_generate_raw_hl7(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.data_factory import generate_raw_hl7_examples
+    examples = generate_raw_hl7_examples(
+        config, output_path=args.output,
+        num_examples=args.num_examples,
+        num_workers=args.num_workers,
+        model_override=getattr(args, "model", None),
+    )
+    print(f"Generated {len(examples)} raw HL7 examples")
+
+
+def cmd_train_grpo(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.training_pipeline import run_grpo
+    adapter_path = run_grpo(
+        config,
+        sft_adapter_path=args.adapter or config.training.adapter_output_dir,
+        train_data_path=args.input,
+    )
+    print(f"GRPO training complete. Adapter saved to {adapter_path}")
+
+
+def cmd_train_simpo(args):
+    config = ConfigManager.load(args.config)
+    from nexifuse.training_pipeline import run_simpo
+    adapter_path = run_simpo(
+        config,
+        adapter_path=args.adapter or config.training.adapter_output_dir,
+        preference_data_path=args.input,
+    )
+    print(f"SimPO training complete. Adapter saved to {adapter_path}")
 
 
 def cmd_train_dpo(args):
@@ -266,6 +321,92 @@ def cmd_pipeline(args):
 PIPELINE_20K_NUM_PER_DOMAIN = 6000
 
 
+def cmd_pipeline_v2(args):
+    """Run v2 pipeline: generate all data types → clean → validate → format → SFT → GRPO → SimPO.
+    Every stage has resume support — if interrupted, re-run to continue from where it stopped.
+    """
+    config = ConfigManager.load(args.config)
+    nw = getattr(args, "num_workers", 8)
+
+    print("=== V2 Pipeline: Data Generation ===")
+
+    # Stage 1a: Domain-specific synthetic data
+    print("\n--- Stage 1a: Healthcare domain data ---")
+    from nexifuse.data_factory import generate_examples
+    generate_examples(config, num_per_domain=args.num_per_domain, num_workers=nw)
+
+    # Stage 1b: General assistant data
+    print("\n--- Stage 1b: General assistant data ---")
+    from nexifuse.data_factory import generate_general_examples
+    generate_general_examples(config, num_per_category=args.num_per_general_category, num_workers=nw)
+
+    # Stage 1c: Multi-turn conversations
+    print("\n--- Stage 1c: Multi-turn conversations ---")
+    from nexifuse.data_factory import generate_conversations
+    generate_conversations(config, num_per_scenario_domain=args.num_per_scenario_domain, num_workers=nw)
+
+    # Stage 1d: Conceptual explanations (v2 new)
+    print("\n--- Stage 1d: Conceptual explanations ---")
+    from nexifuse.data_factory import generate_conceptual_examples
+    generate_conceptual_examples(config, num_per_category=args.num_per_conceptual_category, num_workers=nw)
+
+    # Stage 1e: Raw HL7 messages (v2 new)
+    print("\n--- Stage 1e: Raw HL7 messages ---")
+    from nexifuse.data_factory import generate_raw_hl7_examples
+    generate_raw_hl7_examples(config, num_examples=args.num_raw_hl7, num_workers=nw)
+
+    # Stage 2: Clean
+    print("\n=== V2 Pipeline: Data Processing ===")
+    print("\n--- Stage 2: Cleaning ---")
+    from nexifuse.data_cleaner import clean_data
+    raw_files = sorted(str(p) for p in Path("data/raw").glob("*.jsonl"))
+    print(f"  Cleaning {len(raw_files)} files: {[Path(p).name for p in raw_files]}")
+    clean_data(raw_files)
+
+    # Stage 3: Validate
+    print("\n--- Stage 3: Validation ---")
+    from nexifuse.validator import validate_batch
+    validate_batch("data/cleaned/cleaned.jsonl", config=config)
+
+    # Stage 4: Format
+    print("\n--- Stage 4: Formatting ---")
+    from nexifuse.prompt_formatter import format_dataset
+    conversation_files = sorted(str(p) for p in Path("data/raw").glob("conversations*.jsonl"))
+    format_dataset(
+        "data/validated/passed.jsonl",
+        identity_paths=["data/identity/conversational.jsonl"],
+        conversation_paths=conversation_files or None,
+    )
+
+    # Stage 5: SFT Training
+    if not args.data_only:
+        print("\n=== V2 Pipeline: Training ===")
+        print("\n--- Stage 5: SFT Training ---")
+        from nexifuse.training_pipeline import run_sft
+        adapter_path = run_sft(config, train_data_path="data/formatted/train.jsonl")
+        print(f"  SFT adapter: {adapter_path}")
+
+        # Stage 6: GRPO
+        print("\n--- Stage 6: GRPO Training ---")
+        from nexifuse.training_pipeline import run_grpo
+        adapter_path = run_grpo(config, sft_adapter_path=str(adapter_path),
+                                train_data_path="data/formatted/train.jsonl")
+        print(f"  GRPO adapter: {adapter_path}")
+
+        # Stage 7: SimPO
+        simpo_data = Path("data/simpo/pairs.jsonl")
+        if simpo_data.exists() and simpo_data.stat().st_size > 0:
+            print("\n--- Stage 7: SimPO Alignment ---")
+            from nexifuse.training_pipeline import run_simpo
+            adapter_path = run_simpo(config, adapter_path=str(adapter_path),
+                                     preference_data_path=str(simpo_data))
+            print(f"  SimPO adapter: {adapter_path}")
+        else:
+            print("\n--- Stage 7: SimPO skipped (no preference data) ---")
+
+    print("\n=== V2 Pipeline Complete ===")
+
+
 def cmd_pipeline_20k(args):
     """Run full pipeline targeting 20k+ cleaned examples (includes conversational data in format).
     Scrape uses --no-teacher so it completes quickly; generate requires Ollama for 36k synthetic examples.
@@ -308,6 +449,8 @@ def main():
     p.add_argument("--num-per-category", type=int, default=1500)
     p.add_argument("-w", "--num-workers", type=int, default=8,
                    help="Parallel generation workers (default 8)")
+    p.add_argument("--model", type=str, default=None,
+                   help="Override teacher model (e.g. llama3:8b for faster generation)")
 
     # generate-conversations
     p = sub.add_parser("generate-conversations", help="Generate multi-turn conversations")
@@ -315,6 +458,22 @@ def main():
     p.add_argument("--num-per-scenario-domain", type=int, default=70)
     p.add_argument("-w", "--num-workers", type=int, default=8,
                    help="Parallel generation workers (default 8)")
+    p.add_argument("--model", type=str, default=None,
+                   help="Override teacher model (e.g. llama3:8b for faster generation)")
+
+    # generate-conceptual (v2)
+    p = sub.add_parser("generate-conceptual", help="Generate conceptual/explanation examples")
+    p.add_argument("-o", "--output", default="data/raw/conceptual.jsonl")
+    p.add_argument("--num-per-category", type=int, default=350)
+    p.add_argument("-w", "--num-workers", type=int, default=8)
+    p.add_argument("--model", type=str, default=None)
+
+    # generate-raw-hl7 (v2)
+    p = sub.add_parser("generate-raw-hl7", help="Generate raw HL7 message examples")
+    p.add_argument("-o", "--output", default="data/raw/raw_hl7.jsonl")
+    p.add_argument("--num-examples", type=int, default=1000)
+    p.add_argument("-w", "--num-workers", type=int, default=8)
+    p.add_argument("--model", type=str, default=None)
 
     # clean
     p = sub.add_parser("clean", help="Clean and deduplicate data")
@@ -358,6 +517,16 @@ def main():
     p = sub.add_parser("train-multigpu", help="Run SFT fine-tuning on all GPUs via Accelerate DDP")
     p.add_argument("-i", "--input", default="data/formatted/train.jsonl")
     p.add_argument("-n", "--num-processes", type=int, default=None, help="Number of processes (default: all visible GPUs)")
+
+    # train-grpo (v2)
+    p = sub.add_parser("train-grpo", help="Run GRPO with verifiable rewards")
+    p.add_argument("-i", "--input", default="data/formatted/train.jsonl")
+    p.add_argument("--adapter", default=None, help="Path to SFT adapter (default: from config)")
+
+    # train-simpo (v2)
+    p = sub.add_parser("train-simpo", help="Run SimPO preference alignment")
+    p.add_argument("-i", "--input", default="data/simpo/pairs.jsonl")
+    p.add_argument("--adapter", default=None, help="Path to adapter (default: from config)")
 
     # train-dpo
     p = sub.add_parser("train-dpo", help="Run DPO alignment")
@@ -408,6 +577,16 @@ def main():
     p.add_argument("-w", "--num-workers", type=int, default=8,
                    help="Parallel generation workers (default 8)")
 
+    # pipeline-v2: full v2 pipeline with all generation types + training stages
+    p = sub.add_parser("pipeline-v2", help="Run v2 pipeline (generate → clean → validate → format → SFT → GRPO → SimPO)")
+    p.add_argument("--num-per-domain", type=int, default=2500)
+    p.add_argument("--num-per-general-category", type=int, default=2500)
+    p.add_argument("--num-per-scenario-domain", type=int, default=100)
+    p.add_argument("--num-per-conceptual-category", type=int, default=350)
+    p.add_argument("--num-raw-hl7", type=int, default=1000)
+    p.add_argument("-w", "--num-workers", type=int, default=8)
+    p.add_argument("--data-only", action="store_true", help="Only run data pipeline, skip training")
+
     # pipeline-20k: same as pipeline but with num_per_domain=6000 for 20k+ cleaned + conversational
     p = sub.add_parser("pipeline-20k", help="Run full pipeline targeting 20k+ cleaned examples (includes identity/conversational)")
     p.add_argument("--no-teacher", action="store_true")
@@ -425,12 +604,16 @@ def main():
         "ingest": cmd_ingest, "scrape": cmd_scrape, "generate": cmd_generate,
         "generate-general": cmd_generate_general,
         "generate-conversations": cmd_generate_conversations,
+        "generate-conceptual": cmd_generate_conceptual,
+        "generate-raw-hl7": cmd_generate_raw_hl7,
         "clean": cmd_clean, "validate": cmd_validate, "dpo": cmd_dpo,
         "format": cmd_format, "train": cmd_train, "train-multigpu": cmd_train_multigpu,
+        "train-grpo": cmd_train_grpo, "train-simpo": cmd_train_simpo,
         "train-dpo": cmd_train_dpo,
         "merge": cmd_merge, "convert": cmd_convert, "quantize": cmd_quantize,
         "modelfile": cmd_modelfile, "register": cmd_register,
-        "serve": cmd_serve, "pipeline": cmd_pipeline, "pipeline-20k": cmd_pipeline_20k,
+        "serve": cmd_serve, "pipeline": cmd_pipeline,
+        "pipeline-v2": cmd_pipeline_v2, "pipeline-20k": cmd_pipeline_20k,
     }
 
     commands[args.command](args)
