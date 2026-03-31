@@ -81,13 +81,15 @@ Build a domain-specific "Robust Expert" AI model for healthcare data interoperab
 |-------|--------|------------|
 | Phase 0: Environment Setup | **COMPLETE** | 100% |
 | Phase 1: Documentation Corpus | **COMPLETE** | 100% |
-| Phase 2: Data Generation | **COMPLETE** | 100% — 22,124 raw examples (healthcare + general + multi-turn + scraped) |
-| Phase 3: Data Processing | **COMPLETE** | 100% — 18,055 cleaned → 17,661 validated (97.8%) → 35,394 formatted |
-| Phase 4: Model Training (MVP) | **COMPLETE** | 100% — 8B model trained on 9.3k, loss 0.2256, deployed |
-| Phase 5: Model Export (MVP) | **COMPLETE** | 100% — GGUF Q4_K_M (4.6 GB) |
-| Phase 6: Deployment | **COMPLETE** | 100% — Ollama + FastAPI + Integrator |
-| Phase 7: v1 Training & Improvement | **COMPLETE** | 100% — v1 trained on 35.4k examples, deployed via Ollama |
-| Phase 8: v2 — Production-Ready | **NEXT** | 0% — 50-80k examples, DPO alignment, extended context |
+| Phase 2: Data Generation (V1) | **COMPLETE** | 100%: 22,124 raw examples |
+| Phase 3: Data Processing (V1) | **COMPLETE** | 100%: 18,055 cleaned → 17,661 validated → 35,394 formatted |
+| Phase 4: Model Training (MVP) | **COMPLETE** | 100%: 8B model, 9.3k examples, loss 0.2256 |
+| Phase 5: Model Export (MVP) | **COMPLETE** | 100%: GGUF Q4_K_M (4.6 GB) |
+| Phase 6: Deployment | **COMPLETE** | 100%: Ollama + FastAPI + Integrator |
+| Phase 7: V1 Training | **COMPLETE** | 100%: 35.4k formatted, loss 0.175 |
+| Phase 8: V2 Data + Training | **COMPLETE** | 100%: 45.3k raw, 41k formatted, loss 0.27, A- benchmark |
+| Phase 9: V2.5 Enhancement | **COMPLETE** | 100%: 58k raw, 51.8k formatted, loss 0.303, identity fix, 981/981 benchmark |
+| Phase 10: V3 (GRPO + Scale) | **NEXT** | 0%: GRPO alignment, 100k+ dataset, larger base model |
 
 ---
 

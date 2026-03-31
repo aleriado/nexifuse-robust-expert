@@ -326,9 +326,11 @@ def run_grpo(
 
     # -- Load model with existing SFT adapter -------------------------------
     logger.info("Loading base model with SFT adapter from %s", sft_adapter_path)
+    # Use shorter seq length for GRPO to avoid dimension mismatch in chunked log-softmax
+    grpo_seq_length = min(tc.max_seq_length, 1024)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(sft_adapter_path),
-        max_seq_length=tc.max_seq_length,
+        max_seq_length=grpo_seq_length,
         load_in_4bit=(tc.quantization == "nf4"),
         dtype=None,
     )
