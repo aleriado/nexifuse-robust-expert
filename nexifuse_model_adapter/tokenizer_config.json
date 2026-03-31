@@ -2059,7 +2059,7 @@
   "legacy": true,
   "model_max_length": 131072,
   "pad_token": "<|finetune_right_pad_id|>",
-  "padding_side": "right",
+  "padding_side": "left",
   "sp_model_kwargs": {},
   "tokenizer_class": "LlamaTokenizerFast",
   "unk_token": null,
