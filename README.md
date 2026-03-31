@@ -6,61 +6,70 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Highlights
 
-- **v1 complete, v2 next** — MVP and v1 milestones achieved, preparing for v2 (MedGemma 27B upgrade)
-- **21k+ raw examples generated** — 59% healthcare, 35% general assistant, 5% multi-turn, 2.5% scraped code
-- **8-GPU parallel data generation** — 8 Ollama instances (one per GPU) for maximum throughput
-- **Dual teacher model strategy** — Llama 3 70B for healthcare quality, Llama 3 8B for general/casual data
-- **8-GPU distributed training** via torchrun DDP — 8x NVIDIA L4 (GB10 Blackwell), completed in 2h 20m
-- **Final training loss: 0.175** — strong domain alignment with retained general capabilities
-- **97.8% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
-- **End-to-end CLI pipeline** — from data ingestion to model serving in one tool
+- **V2.5 deployed (A- grade)** — 981/981 benchmark pass rate, zero failures across 10 categories
+- **58k+ raw examples** — healthcare (57%), general (31%), conceptual (5%), multi-turn (3%), raw HL7 (2%), scraped (1%)
+- **51,818 formatted training examples** — cleaned, validated, chat-template formatted
+- **Identity anchoring** — 500 hand-crafted examples + enhanced system prompt with 6 behavioral rules
+- **8-GPU distributed training** via torchrun DDP — 8x NVIDIA L4, completed in 3h 17m
+- **Final training loss: 0.303** — strong domain alignment across all categories
+- **93.1% validation pass rate** with multi-format validation (JavaScript, XML, HL7 v2, FHIR R4, security scanning)
+- **25+ CLI commands** — from data ingestion to GRPO alignment in one tool
 - **OpenAI-compatible API** — drop-in replacement for any OpenAI client
 - **100% local, 100% free** — all training, generation, and inference on-premise
 
 ## Current Status
 
-MVP and v1 milestones complete. Preparing for v2 (MedGemma 27B upgrade — see [ROADMAP.md](ROADMAP.md)).
+V2.5 deployed and benchmarked. See [V2.5_Upgrade_Plan_2026_03_26.md](V2.5_Upgrade_Plan_2026_03_26.md) for details.
 
 ### Milestones
 
 | Milestone | Status | Details |
 |-----------|--------|---------|
 | **MVP** (8-12k examples) | COMPLETE | 9.3k healthcare-only dataset. Proved pipeline works end-to-end. |
-| **v1** (20-30k examples) | COMPLETE | 21.2k raw → cleaned → validated → trained with 8-GPU DDP in 2h 20m. |
-| **v2 / MedGemma** (50-80k examples) | NEXT | MedGemma 27B base, full vendor coverage, DPO alignment, extended context. |
+| **V1** (20-30k examples) | COMPLETE | 21.2k raw, 8-GPU DDP, loss 0.175. |
+| **V2** (45k examples) | COMPLETE | 45.3k raw, 41k formatted, loss 0.27, A- grade (981/981 benchmark). |
+| **V2.5** (58k examples) | COMPLETE | 58k raw, 51.8k formatted, loss 0.303, A- grade, identity fix, enhanced system prompt. |
+| **V3** | NEXT | GRPO/SimPO alignment, larger base model, 100k+ dataset. |
 
-### v1 Completion Summary
+### V2.5 Summary (Current)
 
 | Phase | Status | Details |
 |-------|--------|---------|
-| Data Generation | COMPLETE | 21,216 raw examples — 8 GPUs parallel (8 Ollama instances) |
-| Data Cleaning | COMPLETE | Dedup + normalization + identity filtering |
-| Validation | COMPLETE | 97.8% pass rate (JavaScript, XML, HL7 v2, FHIR R4, security) |
-| Formatting | COMPLETE | Llama 3 chat template applied |
-| v1 Training | COMPLETE | 8-GPU DDP (torchrun), 3 epochs, 2h 20m, final loss 0.175 |
-| v1 Export & Deploy | COMPLETE | Merged LoRA → F16 GGUF → Q4_K_M (4.6 GB), registered with Ollama |
+| Data Generation | COMPLETE | 58,087 raw examples (45.3k V2 + 12.7k V2.5 new) |
+| Identity Anchoring | COMPLETE | 500 hand-crafted + enhanced system prompt (6 rules) |
+| Data Cleaning | COMPLETE | 55,579 after dedup + normalization |
+| Validation | COMPLETE | 51,746 passed (93.1% pass rate) |
+| Formatting | COMPLETE | 51,818 with identity anchors |
+| SFT Training | COMPLETE | 8-GPU DDP, 2 epochs, 3h 17m, loss 0.303 |
+| GRPO/SimPO | DEFERRED | Unsloth bug in chunked log-softmax, deferred to V3 |
+| Export & Deploy | COMPLETE | Merged → F16 → Q4_K_M (4.6 GB), Ollama registered |
+| Benchmark | COMPLETE | 981/981 passed, zero errors |
 
-### Dataset Composition (v1)
+### Dataset Composition (V2.5)
 
-| Source | File | Count | % of Raw |
-|--------|------|-------|----------|
-| Healthcare domain (HL7v2, FHIR R4, Mirth, EHR API, IHE, DICOM) | `synthetic_run1.jsonl` | 12,600 | 59% |
-| General assistant (math, coding, reasoning, casual, knowledge) | `general.jsonl` | 7,500 | 35% |
-| Multi-turn conversations | `conversations.jsonl` | 1,116 | 5% |
-| GitHub scraped code | `scraped.jsonl` | 547 | 2.5% |
-| **Total raw** | | **21,763** | |
+| Source | Count | % of Raw |
+|--------|-------|----------|
+| Healthcare domain (HL7v2, FHIR R4, Mirth, EHR API, IHE, DICOM) | 33,000 | 57% |
+| General assistant (math, coding, reasoning, casual, knowledge) | 18,000 | 31% |
+| Conceptual explanations | 3,120 | 5% |
+| Multi-turn conversations | 1,920 | 3% |
+| Raw HL7 messages | 1,000 | 2% |
+| GitHub scraped code | 547 | 1% |
+| Identity anchors | 500 | 1% |
+| **Total raw** | **58,087** | |
 
-### Training Run (v1 Final)
+### Training Runs
 
-| Metric | Value |
-|--------|-------|
-| Hardware | 8× NVIDIA L4 (GB10 Blackwell, 22 GB each) |
-| Training time | 2 hours 20 minutes |
-| Total steps | 1,926 (3 epochs) |
-| Batch size (effective) | 32 (1 × 4 × 8 GPUs) |
-| Starting loss | 0.68 |
-| Final loss | **0.175** |
-| Model size (GGUF Q4_K_M) | 4.6 GB |
+| Metric | MVP | V1 | V2 | V2.5 |
+|--------|-----|----|----|------|
+| Raw examples | 9,302 | 21,763 | 45,346 | 58,087 |
+| Formatted | 9,302 | 35,394 | 41,019 | 51,818 |
+| LoRA rank | 32 | 32 | 64 | 64 |
+| Epochs | 5 | 3 | 2 | 2 |
+| Training time | ~2h | 2h 20m | 3h 10m | 3h 17m |
+| Final loss | 0.226 | 0.175 | 0.27 | 0.303 |
+| Benchmark grade | - | B+ | A- | A- |
+| GGUF size | 4.6 GB | 4.6 GB | 4.6 GB | 4.6 GB |
 
 ## Architecture
 
@@ -370,15 +379,14 @@ python -m nexifuse train-multigpu
 | Learning Rate | 2e-4 (cosine decay) |
 | Trainable Parameters | 83.9M / 8.1B (1.03%) |
 
-### Next Steps (v2 — Production)
+### Next Steps (V3)
 
-1. Scale dataset to 50-80k examples with full vendor coverage (Epic, Cerner, Athena, MEDITECH)
-2. Generate DPO preference pairs (student failures + DeepSeek-R1 70B chosen)
-3. Run DPO alignment training
-4. Extend context window to 8192+ tokens
-5. Add IHE profile and DICOM integration examples
-6. Build automated evaluation suite for regression testing
-7. Benchmark v2 vs v1 across healthcare + general capability test suite
+1. Fix GRPO alignment (Unsloth chunked log-softmax bug or switch to vanilla trl GRPOTrainer)
+2. Run SimPO preference alignment with rejection sampling pairs
+3. Scale to 100k+ examples with full vendor coverage (Epic, Cerner, Athena, MEDITECH, Allscripts)
+4. Upgrade base model to 14B or 30B MoE (requires A100 GPUs)
+5. Add RAG integration for real-time documentation grounding
+6. Extend context window to 8192+ tokens
 
 ## Model Export & Deployment
 
@@ -631,4 +639,4 @@ pytest tests/ -v
 
 ## License
 
-This project is proprietary. See [ROADMAP.md](ROADMAP.md) for the full technical roadmap and [Upgrade_Plan_2026_3_11.md](Upgrade_Plan_2026_3_11.md) for the detailed dataset strategy.
+This project is proprietary. See [ROADMAP.md](ROADMAP.md) for the full technical roadmap, [V2.5_Upgrade_Plan_2026_03_26.md](V2.5_Upgrade_Plan_2026_03_26.md) for the V2.5 upgrade plan, and [Test_1000_2026_03_25.md](Test_1000_2026_03_25.md) for the 1,000-prompt benchmark report.
