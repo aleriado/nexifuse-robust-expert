@@ -61,7 +61,7 @@ class GRPOConfig:
     learning_rate: float = 5e-5
     batch_size: int = 1
     gradient_accumulation: int = 4
-    max_completion_length: int = 2048
+    max_completion_length: int = 256
     beta: float = 0.1
 
 
