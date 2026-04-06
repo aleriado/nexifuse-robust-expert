@@ -55,6 +55,58 @@ class ChatResponse(BaseModel):
     usage: Usage
 
 
+_IDENTITY_TRIGGERS = (
+    "who are you",
+    "what is your name",
+    "what are you",
+    "are you chatgpt",
+    "are you gpt",
+    "are you claude",
+    "are you gemini",
+    "are you deepseek",
+)
+
+# Pairs of (pattern to replace, replacement) — order matters: longer/specific first.
+_HALLUCINATED_IDENTITIES = [
+    ("I'm ChatGPT",   "I'm NexiFuse"),
+    ("I am ChatGPT",  "I am NexiFuse"),
+    ("I'm GPT-4",     "I'm NexiFuse"),
+    ("I am GPT-4",    "I am NexiFuse"),
+    ("I'm Claude",    "I'm NexiFuse"),
+    ("I am Claude",   "I am NexiFuse"),
+    ("I'm Gemini",    "I'm NexiFuse"),
+    ("I am Gemini",   "I am NexiFuse"),
+    ("I'm DeepSeek",  "I'm NexiFuse"),
+    ("I am DeepSeek", "I am NexiFuse"),
+]
+
+
+def _post_process_response(prompt: str, response: str) -> str:
+    """Apply identity-related post-processing to the model response.
+
+    Steps applied only when the user prompt matches an identity question:
+    1. Replace any hallucinated third-party identity phrases with NexiFuse.
+    2. Prepend a NexiFuse identity statement when the response still lacks it.
+
+    Non-identity prompts are returned unchanged.
+    """
+    prompt_lower = prompt.lower()
+    is_identity_question = any(trigger in prompt_lower for trigger in _IDENTITY_TRIGGERS)
+
+    if not is_identity_question:
+        return response
+
+    # Step 1 — block hallucinated identities (case-sensitive exact phrases).
+    for wrong, correct in _HALLUCINATED_IDENTITIES:
+        response = response.replace(wrong, correct)
+
+    # Step 2 — if NexiFuse is still not mentioned, prepend an introduction.
+    if "nexifuse" not in response.lower():
+        response = "I'm NexiFuse, a healthcare integration expert. " + response
+
+    return response
+
+
 def create_app(config: PipelineConfig):
     """Create and configure the FastAPI application."""
     try:
@@ -141,6 +193,12 @@ def create_app(config: PipelineConfig):
         prompt_tokens = data.get("prompt_eval_count", 0) or 0
         completion_tokens = data.get("eval_count", 0) or 0
         elapsed = time.time() - start_time
+
+        # Extract the last user message for post-processing
+        user_prompt = next(
+            (m.content for m in reversed(body.messages) if m.role == "user"), ""
+        )
+        content = _post_process_response(user_prompt, content)
 
         logger.info("Response %s: tokens=%d+%d, elapsed=%.2fs", request_id, prompt_tokens, completion_tokens, elapsed)
 
