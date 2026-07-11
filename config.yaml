@@ -108,5 +108,6 @@ validation:
 inference:
   model_name: "nexifuse-robust-expert"
   backend: "ollama"
+  # Public bind: endpoint is reachable from the internet and unauthenticated.
   host: "0.0.0.0"
   port: 8080

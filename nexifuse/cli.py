@@ -552,7 +552,7 @@ def main():
 
     # modelfile
     p = sub.add_parser("modelfile", help="Generate Ollama Modelfile")
-    p.add_argument("--gguf", default="outputs/nexifuse-q4km.gguf")
+    p.add_argument("--gguf", default="outputs/nexifuse-v35-r1-q4km.gguf")
     p.add_argument("-o", "--output", default="outputs/Modelfile")
 
     # register

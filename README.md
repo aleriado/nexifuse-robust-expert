@@ -6,20 +6,20 @@ Designed for fully on-premise deployment. Zero API costs. Zero data leaves the p
 
 ## Highlights
 
-- **V3 deployed** with 100% pass rate across 8,901 benchmark prompts and zero failures
-- **70k+ raw examples** spanning healthcare (57%), general (31%), conceptual (5%), multi-turn (3%), identity (3%), scraped (1%)
-- **79,647 formatted training examples** including 16,921 V3 identity anchors (explicit, negative, injected)
-- **Identity recall: 80.2%** (up from 27.4% in V2.5) with enhanced system prompt and post-processing
-- **8-GPU distributed training** via torchrun DDP on 8x NVIDIA L4, completed in 5h 11m
-- **Final training loss: 0.276** with strong domain alignment across all 10 categories
-- **25+ CLI commands** covering data ingestion through alignment training in one tool
-- **OpenAI-compatible API** as a drop-in replacement for any OpenAI client
-- **Inference-time identity enforcement** with post-processing that blocks hallucinated identities
+- **V3.5 deployed** with the four pillars of uniqueness: PHI-Safe by Default, Validated Output, Mirth Connect Native, Bidirectional Translation
+- **PHI safety: 100%** (zero leaks across 500 test prompts) trained behavior, not a system prompt rule
+- **Error handling: 75%** of all code responses include try/catch (up from 16% in V3)
+- **Identity recall: 100%** through training + inference-time enforcer (with 40+ trigger patterns)
+- **Vendor-specific EHR knowledge** for Epic FHIR, Cerner Ignite, Athena Health, MEDITECH, Allscripts
+- **63,680 formatted training examples** after two-round SFT with targeted Round 2 fixes
+- **Complete Mirth channel XML** generation, not just snippets
+- **Integrator desktop app fully integrated** with V3.5 (streaming, code highlighting, PHI badges, AI body generation, Schema Mapper field mapping)
+- **OpenAI-compatible API** as a drop-in replacement for any OpenAI client, with PHI scanner and identity enforcer post-processing
 - **100% local, 100% free** with all training, generation, and inference on-premise
 
 ## Current Status
 
-V3 deployed and benchmarked. See [ROADMAP.md](ROADMAP.md) for the full project roadmap.
+V3.5 deployed. Integrator app fully integrated with V3.5 model. See [V3.5_Final_Benchmark_Report.md](V3.5_Final_Benchmark_Report.md) for full benchmark results and [ROADMAP.md](ROADMAP.md) for the full project roadmap.
 
 ### Milestones
 
@@ -29,8 +29,9 @@ V3 deployed and benchmarked. See [ROADMAP.md](ROADMAP.md) for the full project r
 | **V1** (20-30k examples) | COMPLETE | 21.2k raw, 8-GPU DDP, loss 0.175, grade B+. |
 | **V2** (45k examples) | COMPLETE | 45.3k raw, 41k formatted, loss 0.27, grade A- (981/981 benchmark). |
 | **V2.5** (58k examples) | COMPLETE | 58k raw, 51.8k formatted, loss 0.303, grade A- (8,901/8,901 benchmark). |
-| **V3** (80k examples) | COMPLETE | 70k raw, 79.6k formatted, loss 0.276, identity recall 80.2%, 8,901/8,901 benchmark. |
-| **V4** | NEXT | ORPO alignment, MedGemma 27B base, 100k+ dataset, full vendor coverage. |
+| **V3** (80k examples) | COMPLETE | 70k raw, 79.6k formatted, loss 0.276, identity 80.2%, 8,901/8,901 benchmark. |
+| **V3.5** (120k examples) | COMPLETE | 63.6k formatted, two-round SFT, PHI-safe 100%, error handling 75%, identity 100% (with post-processor), full Mirth channels, vendor EHR knowledge, Integrator app integration. |
+| **V4** | NEXT | MedGemma 27B base, tool use (Python eval for math verification), RAG, multilingual support. |
 
 ### V3 Summary (Current)
 

@@ -109,6 +109,11 @@ def generate_modelfile(
 ) -> Path:
     """Generate an Ollama Modelfile for the GGUF model."""
     gguf_path = Path(gguf_path)
+    if not gguf_path.is_file():
+        raise FileNotFoundError(
+            f"GGUF not found: {gguf_path}. Ollama resolves FROM at registration "
+            f"time, so a bad path here fails later in `register`, not now."
+        )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

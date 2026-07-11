@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xvfb-run npm:*)",
+      "Bash(dpkg -l)",
+      "Bash(DISPLAY=:20 npm run tauri dev)",
+      "Bash(ldd --version)",
+      "Read(//snap/core20/2717/usr/lib/x86_64-linux-gnu/**)"
+    ]
+  }
+}
