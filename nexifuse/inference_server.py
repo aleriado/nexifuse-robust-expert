@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -17,7 +18,60 @@ from nexifuse.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
+
+# ── PHI Safety Scanner ──────────────────────────────────────────────
+_PHI_UNSAFE_PATTERNS = [
+    re.compile(r'console\.log\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'print\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'logger\.\w+\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'System\.out\.println\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'log\.(info|debug|warn|error)\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'printf?\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
+    re.compile(r'console\.log\([^)]*\b(ssn|socialSecurity|social_security)\b', re.IGNORECASE),
+]
+
+
+def _scan_phi_safety(response: str) -> tuple[bool, str]:
+    """Scan response for PHI safety violations.
+
+    Returns (is_safe, response) where response may be annotated with warnings.
+    """
+    violations = []
+    for pattern in _PHI_UNSAFE_PATTERNS:
+        matches = pattern.findall(response)
+        if matches:
+            violations.append(pattern.pattern[:60])
+
+    if not violations:
+        return True, response
+
+    logger.warning("PHI safety violation detected: %d patterns matched", len(violations))
+    warning = (
+        "\n\n> **PHI Safety Warning:** This response may contain code that "
+        "logs or prints patient identifiers in plaintext. Always use "
+        "`redact()` or `mask()` for PHI fields (SSN, MRN, name, DOB) "
+        "in logs, error messages, and API responses."
+    )
+    return False, response + warning
+
 OLLAMA_BASE = "http://localhost:11434"
+
+# The GGUF carries a DeepSeek-R1 chat template in its metadata, which Ollama's
+# /api/chat renderer prefers over the Modelfile TEMPLATE. That template appends
+# "<|Assistant|><think>" and routes the whole reply into the `thinking` field,
+# leaving `content` empty. We render the Llama-3 prompt here and use
+# /api/generate with raw=true so neither the renderer nor the thinking parser runs.
+LLAMA3_STOP = ["<|eot_id|>", "<|end_of_text|>"]
+
+
+def _build_llama3_prompt(messages) -> str:
+    parts = ["<|begin_of_text|>"]
+    for m in messages:
+        parts.append(
+            f"<|start_header_id|>{m.role}<|end_header_id|>\n\n{m.content}<|eot_id|>"
+        )
+    parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    return "".join(parts)
 
 
 # ── OpenAI-compatible request/response models ─────────────────────
@@ -59,50 +113,142 @@ _IDENTITY_TRIGGERS = (
     "who are you",
     "what is your name",
     "what are you",
+    "tell me about yourself",
+    "introduce yourself",
+    "what ai are you",
+    "what ai model are you",
+    "what model are you",
+    "what kind of ai",
+    "what's your name",
+    "your name",
+    "your identity",
+    "describe yourself",
     "are you chatgpt",
     "are you gpt",
     "are you claude",
     "are you gemini",
     "are you deepseek",
+    "are you llama",
+    "are you bard",
+    "are you copilot",
+    "are you an ai",
+    "what can you do",
+    "what are your capabilities",
+    "tell me what you can do",
+    "what is nexifuse",
+    "what's nexifuse",
+    "who built you",
+    "who made you",
+    "who created you",
+    "what's the difference between you and",
+    "how are you different from",
+    "what makes you different",
+    "why should i use you",
+    "compare yourself to",
+    "are you open source",
+    "what's your knowledge cutoff",
+    "what's your training",
+    "your training data",
+    "your model",
+    "what version are you",
 )
 
-# Pairs of (pattern to replace, replacement) — order matters: longer/specific first.
+# Aggressive identity replacements - case-insensitive substring replacement
+# Order: longest/most specific first
 _HALLUCINATED_IDENTITIES = [
-    ("I'm ChatGPT",   "I'm NexiFuse"),
-    ("I am ChatGPT",  "I am NexiFuse"),
-    ("I'm GPT-4",     "I'm NexiFuse"),
-    ("I am GPT-4",    "I am NexiFuse"),
-    ("I'm Claude",    "I'm NexiFuse"),
-    ("I am Claude",   "I am NexiFuse"),
-    ("I'm Gemini",    "I'm NexiFuse"),
-    ("I am Gemini",   "I am NexiFuse"),
-    ("I'm DeepSeek",  "I'm NexiFuse"),
-    ("I am DeepSeek", "I am NexiFuse"),
+    # I'm/I am claims
+    ("I'm ChatGPT",        "I'm NexiFuse"),
+    ("i'm chatgpt",        "I'm NexiFuse"),
+    ("I am ChatGPT",       "I am NexiFuse"),
+    ("i am chatgpt",       "I am NexiFuse"),
+    ("I'm GPT-4",          "I'm NexiFuse"),
+    ("I'm GPT-3",          "I'm NexiFuse"),
+    ("I'm GPT",            "I'm NexiFuse"),
+    ("I am GPT-4",         "I am NexiFuse"),
+    ("I am GPT-3",         "I am NexiFuse"),
+    ("I am GPT",           "I am NexiFuse"),
+    ("I'm Claude",         "I'm NexiFuse"),
+    ("i'm claude",         "I'm NexiFuse"),
+    ("I am Claude",        "I am NexiFuse"),
+    ("i am claude",        "I am NexiFuse"),
+    ("I'm Gemini",         "I'm NexiFuse"),
+    ("I am Gemini",        "I am NexiFuse"),
+    ("I'm DeepSeek",       "I'm NexiFuse"),
+    ("I am DeepSeek",      "I am NexiFuse"),
+    ("I'm Llama",          "I'm NexiFuse"),
+    ("I am Llama",         "I am NexiFuse"),
+    ("I'm Bard",           "I'm NexiFuse"),
+    ("I am Bard",          "I am NexiFuse"),
+    ("I'm Copilot",        "I'm NexiFuse"),
+    ("I am Copilot",       "I am NexiFuse"),
+    # "I'm an AI assistant called X" / "based on X"
+    ("based on GPT",       "built as NexiFuse"),
+    ("based on Llama",     "built as NexiFuse"),
+    ("based on Claude",    "built as NexiFuse"),
+    ("based on DeepSeek",  "built as NexiFuse"),
+    ("an AI assistant called GPT",     "NexiFuse"),
+    ("an AI assistant called Claude",  "NexiFuse"),
+    ("an AI assistant called Gemini",  "NexiFuse"),
+    # "My name is X"
+    ("My name is ChatGPT",  "My name is NexiFuse"),
+    ("My name is Claude",   "My name is NexiFuse"),
+    ("My name is Gemini",   "My name is NexiFuse"),
+    ("My name is GPT",      "My name is NexiFuse"),
+    ("My name is DeepSeek", "My name is NexiFuse"),
+    # "Yes, I'm/I am X" (affirmation bias)
+    ("Yes, I'm ChatGPT",    "No, I'm NexiFuse"),
+    ("Yes, I am ChatGPT",   "No, I am NexiFuse"),
+    ("Yes, I'm Claude",     "No, I'm NexiFuse"),
+    ("Yes, I am Claude",    "No, I am NexiFuse"),
+    ("Yes, I'm GPT",        "No, I'm NexiFuse"),
+    ("Yes, I am GPT",       "No, I am NexiFuse"),
+    ("Yes, I'm Gemini",     "No, I'm NexiFuse"),
+    ("Yes, I am Gemini",    "No, I am NexiFuse"),
+    ("Yes, I'm DeepSeek",   "No, I'm NexiFuse"),
+    ("Yes, I am DeepSeek",  "No, I am NexiFuse"),
 ]
 
 
 def _post_process_response(prompt: str, response: str) -> str:
-    """Apply identity-related post-processing to the model response.
+    """Apply post-processing to every model response.
 
-    Steps applied only when the user prompt matches an identity question:
-    1. Replace any hallucinated third-party identity phrases with NexiFuse.
-    2. Prepend a NexiFuse identity statement when the response still lacks it.
-
-    Non-identity prompts are returned unchanged.
+    Steps:
+    1. Block hallucinated identities in ALL responses.
+    2. For identity questions: ALWAYS prepend NexiFuse introduction.
+    3. Scan for PHI safety violations and append warning if found.
     """
-    prompt_lower = prompt.lower()
-    is_identity_question = any(trigger in prompt_lower for trigger in _IDENTITY_TRIGGERS)
-
-    if not is_identity_question:
-        return response
-
-    # Step 1 — block hallucinated identities (case-sensitive exact phrases).
+    # Step 1 — block hallucinated identities in ALL responses.
     for wrong, correct in _HALLUCINATED_IDENTITIES:
         response = response.replace(wrong, correct)
 
-    # Step 2 — if NexiFuse is still not mentioned, prepend an introduction.
-    if "nexifuse" not in response.lower():
-        response = "I'm NexiFuse, a healthcare integration expert. " + response
+    # Step 2 — identity-specific enforcement.
+    prompt_lower = prompt.lower()
+    is_identity_question = (
+        # Explicit identity triggers
+        any(trigger in prompt_lower for trigger in _IDENTITY_TRIGGERS)
+        # Short prompts that mention 'you' or 'your' are usually about the assistant
+        or (len(prompt) < 100 and (" you " in prompt_lower or " your " in prompt_lower
+                                    or prompt_lower.startswith(("are you", "do you", "can you",
+                                                                 "what do you", "what can you",
+                                                                 "what are you", "what's your",
+                                                                 "tell me", "describe yourself",
+                                                                 "introduce yourself", "pretend",
+                                                                 "you are", "you're"))))
+        # Any prompt that mentions another AI is likely an identity probe
+        or any(ai in prompt_lower for ai in ["chatgpt", "gpt-4", "gpt-3", "gpt4", "claude",
+                                              "gemini", "deepseek", "llama", "bard", "copilot"])
+    )
+
+    if is_identity_question:
+        # Check the first 200 chars for "nexifuse" — if missing, prepend introduction.
+        # This guarantees the response opens with the NexiFuse identity.
+        first_chunk = response[:200].lower()
+        if "nexifuse" not in first_chunk:
+            response = "I'm NexiFuse, a healthcare integration expert specializing in Mirth Connect, HL7 v2, FHIR R4, CDA, and EHR API connectivity. " + response
+
+    # Step 3 — PHI safety scan on all responses containing code.
+    if "```" in response or "function " in response or "def " in response or "class " in response:
+        _is_safe, response = _scan_phi_safety(response)
 
     return response
 
@@ -150,6 +296,15 @@ def create_app(config: PipelineConfig):
             "data": [{"id": ic.model_name, "object": "model", "owned_by": "nexifuse"}],
         }
 
+    class PhiScanRequest(BaseModel):
+        code: str
+
+    @app.post("/v1/phi-scan")
+    async def phi_scan(body: PhiScanRequest):
+        """Scan a code snippet for PHI safety violations."""
+        is_safe, annotated = _scan_phi_safety(body.code)
+        return {"is_safe": is_safe, "code": annotated}
+
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatRequest):
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -160,12 +315,16 @@ def create_app(config: PipelineConfig):
             request_id, body.model, len(body.messages), body.temperature, body.stream,
         )
 
-        ollama_messages = [{"role": m.role, "content": m.content} for m in body.messages]
         ollama_payload = {
             "model": body.model,
-            "messages": ollama_messages,
+            "prompt": _build_llama3_prompt(body.messages),
+            "raw": True,
             "stream": body.stream,
-            "options": {"temperature": body.temperature, "num_predict": body.max_tokens},
+            "options": {
+                "temperature": body.temperature,
+                "num_predict": body.max_tokens,
+                "stop": LLAMA3_STOP,
+            },
         }
 
         try:
@@ -176,7 +335,7 @@ def create_app(config: PipelineConfig):
                 )
 
             async with httpx.AsyncClient(timeout=300) as client:
-                resp = await client.post(f"{OLLAMA_BASE}/api/chat", json=ollama_payload)
+                resp = await client.post(f"{OLLAMA_BASE}/api/generate", json=ollama_payload)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -189,7 +348,7 @@ def create_app(config: PipelineConfig):
                 raise HTTPException(status_code=404, detail=f"Model '{body.model}' not found")
             raise HTTPException(status_code=502, detail=f"Backend error: {exc.response.status_code}")
 
-        content = data.get("message", {}).get("content", "")
+        content = data.get("response", "")
         prompt_tokens = data.get("prompt_eval_count", 0) or 0
         completion_tokens = data.get("eval_count", 0) or 0
         elapsed = time.time() - start_time
@@ -213,13 +372,13 @@ def create_app(config: PipelineConfig):
     async def _stream_ollama(payload: dict, request_id: str, model: str, start_time: float):
         try:
             async with httpx.AsyncClient(timeout=300) as client:
-                async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
+                async with client.stream("POST", f"{OLLAMA_BASE}/api/generate", json=payload) as resp:
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
                         if not line:
                             continue
                         data = json.loads(line)
-                        content = data.get("message", {}).get("content", "")
+                        content = data.get("response", "")
                         done = data.get("done", False)
                         chunk = {
                             "id": request_id,
