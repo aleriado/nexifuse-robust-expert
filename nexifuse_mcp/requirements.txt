@@ -1,0 +1,6 @@
+# NexiFuse Integrator MCP server dependencies.
+mcp>=1.2,<2
+httpx>=0.27
+# For the x402 pay-per-call gate (nexifuse_mcp.gateway). Both ship with mcp, but pin explicitly.
+starlette>=0.37
+uvicorn>=0.30

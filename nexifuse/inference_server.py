@@ -20,39 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 # ── PHI Safety Scanner ──────────────────────────────────────────────
-_PHI_UNSAFE_PATTERNS = [
-    re.compile(r'console\.log\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'print\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'logger\.\w+\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'System\.out\.println\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'log\.(info|debug|warn|error)\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'printf?\([^)]*patient\.(ssn|name|mrn|dob|social|address|phone)', re.IGNORECASE),
-    re.compile(r'console\.log\([^)]*\b(ssn|socialSecurity|social_security)\b', re.IGNORECASE),
-]
-
-
-def _scan_phi_safety(response: str) -> tuple[bool, str]:
-    """Scan response for PHI safety violations.
-
-    Returns (is_safe, response) where response may be annotated with warnings.
-    """
-    violations = []
-    for pattern in _PHI_UNSAFE_PATTERNS:
-        matches = pattern.findall(response)
-        if matches:
-            violations.append(pattern.pattern[:60])
-
-    if not violations:
-        return True, response
-
-    logger.warning("PHI safety violation detected: %d patterns matched", len(violations))
-    warning = (
-        "\n\n> **PHI Safety Warning:** This response may contain code that "
-        "logs or prints patient identifiers in plaintext. Always use "
-        "`redact()` or `mask()` for PHI fields (SSN, MRN, name, DOB) "
-        "in logs, error messages, and API responses."
-    )
-    return False, response + warning
+# Extracted to nexifuse.phi_scanner so the MCP server (and anything else) can reuse the exact
+# same patterns without pulling in the FastAPI/model stack.
+from nexifuse.phi_scanner import (  # noqa: E402
+    PHI_UNSAFE_PATTERNS as _PHI_UNSAFE_PATTERNS,
+    annotate_phi as _scan_phi_safety,
+)
 
 OLLAMA_BASE = "http://localhost:11434"
 
