@@ -29,3 +29,6 @@ data/dpo/
 # Kiro
 .kiro/
 nexifuse_model_adapter/adapter_model.safetensors
+
+# x402 gate runtime ledger
+nexifuse_mcp/x402_ledger.db*
